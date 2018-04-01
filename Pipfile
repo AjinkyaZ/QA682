@@ -1,0 +1,28 @@
+[[source]]
+
+verify_ssl = true
+name = "pypi"
+url = "https://pypi.python.org/simple"
+
+
+[packages]
+
+nltk = "*"
+scikit-learn = "*"
+tqdm = "*"
+requests = "*"
+"de713d9" = {file = "http://download.pytorch.org/whl/cpu/torch-0.3.1-cp35-cp35m-linux_x86_64.whl"}
+torchvision = "*"
+torchtext = "*"
+ipykernel = "*"
+jupyter = "*"
+ipython = "*"
+
+
+[dev-packages]
+
+
+
+[requires]
+
+python_version = "3.5"
