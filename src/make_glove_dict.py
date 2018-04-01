@@ -1,7 +1,7 @@
 from tqdm import tqdm
 import _pickle as pkl
 
-with open('../data/glove.6B.200d.txt', 'r') as f:
+with open('../data/glove/glove.6B.50d.txt', 'r') as f:
     data = f.readlines()
 
 ddict = {}
@@ -11,5 +11,5 @@ for i in tqdm(data):
     ddict[k] = v
 print(len(ddict), len(ddict['the']))
 
-with open('../data/glove.6B.200d.pkl', 'wb') as f:
+with open('../data/glove/glove.6B.50d.pkl', 'wb') as f:
     pkl.dump(ddict, f)
