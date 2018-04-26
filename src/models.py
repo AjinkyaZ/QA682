@@ -32,6 +32,7 @@ class ModelV1(nn.Module):
         
         self.encoder = nn.Embedding(self.vocab_size, self.emb_dim)
         self.lstm = nn.LSTM(self.emb_dim, self.hidden_size, self.n_layers, bidirectional=self.bidir)
+        self.mul_v = nn.Linear(self.hidden_size)
         self.decoder_start = nn.Linear(self.hidden_size, self.output_size)
         self.decoder_end = nn.Linear(self.hidden_size, self.output_size)
         self.init_weights()
@@ -157,26 +158,37 @@ class ModelV2(ModelV1):
         self.encoder_q = nn.Embedding(self.vocab_size, self.emb_dim)
         self.gru_c = nn.GRU(self.emb_dim, self.hidden_size, self.n_layers, bidirectional=self.bidir)
         self.gru_q = nn.GRU(self.emb_dim, self.hidden_size, self.n_layers, bidirectional=self.bidir)
-        self.gru_op = nn.GRU(self.q_size*2, self.hidden_size, self.n_layers, bidirectional=self.bidir)
-        self.decoder_start = nn.Linear(self.hidden_size, self.output_size)
-        self.decoder_end = nn.Linear(self.hidden_size, self.output_size)
+        self.lin_q = nn.Linear(self.hidden_size*self.dirs, self.hidden_size*self.dirs)
+        self.gru_op = nn.GRU(3*self.dirs*self.hidden_size, 2*self.dirs*self.hidden_size, self.n_layers, bidirectional=self.bidir)
+        self.decoder_start = nn.Linear(self.hidden_size*2*self.dirs, self.output_size)
+        self.decoder_end = nn.Linear(self.hidden_size*2*self.dirs, self.output_size)
         self.init_weights()
     
     def init_weights(self):
         weight_scale = 0.01
         self.encoder_c.weight.data = self.vocab_weights
         self.encoder_q.weight.data = self.vocab_weights
+        self.lin_q.bias.data.fill_(0)
+        self.lin_q.weight.data.uniform_(-weight_scale, weight_scale)
         self.decoder_start.bias.data.fill_(0)
         self.decoder_start.weight.data.uniform_(-weight_scale, weight_scale)
         self.decoder_end.bias.data.fill_(0)
         self.decoder_end.weight.data.uniform_(-weight_scale, weight_scale)
 
     def init_hidden(self, bs=None):
+        weight_scale = 0.01
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size).zero_())
-        
+        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size).uniform_(-weight_scale, weight_scale))
+
+    def init_hidden_2(self, bs=None): # for context_attention LSTM
+        weight_scale = 0.01
+        if bs is None:
+            bs = self.batch_size
+        weight = next(self.parameters()).data
+        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs).uniform_(-weight_scale, weight_scale))
+
     def forward(self, inputs):
         if len(inputs)==1:
             inputs = var(torch.LongTensor(inputs[0]))
@@ -195,6 +207,9 @@ class ModelV2(ModelV1):
         # print("c_op:", c_op.size())
         q_op, self.hidden_q = self.gru_q(embeds_q, self.hidden_q)
         # print("q_op:", q_op.size())
+
+        q_op = F.tanh(self.lin_q(q_op))
+        # print("q_op:", q_op.size())
         # for bmm: c_op : (L1, N, H)->(N, L1, H), q_op : (L2, N, H) -> (N, H, L2)
         cq_op = torch.bmm(c_op.permute(1, 0, 2), q_op.permute(1, 2, 0))
         # print("cq_op:", cq_op.size())
@@ -203,16 +218,21 @@ class ModelV2(ModelV1):
         # print("att_c:", att_c.size(), "att_q:", att_q.size())
         contx_q = torch.bmm(att_q, c_op.permute(1, 0, 2))
         # print("contx_q:", contx_q.size())
-        q_contx_q = torch.cat((q_op, contx_q.permute(1, 0, 2)))
+        q_contx_q = torch.cat((q_op, contx_q.permute(1, 0, 2)), 2)
         # print("q_contx_q:", q_contx_q.size())
-        # print(c_op.permute(1, 0, 2).size(), q_contx_q.permute(1, 2, 0).size())
-        contx_c = torch.bmm(c_op.permute(1, 0, 2), q_contx_q.permute(1, 2, 0))
+        # print(att_c.size(), q_contx_q.size())
+        contx_c = torch.bmm(q_contx_q.permute(1, 2, 0), att_c.permute(0, 2, 1))
         # print("contx_c:", contx_c.size())
-        gru_op, self.hidden_op = self.gru_op(contx_c.permute(1, 0, 2), self.hidden_op)
+        # print("c_op:", c_op.size())
+        c_contx_c = torch.cat((contx_c.permute(0, 2, 1), c_op.permute(1, 0, 2)), 2)
+        # print("c_contx_c:", c_contx_c.size())
+        # print("hidden_op:", self.hidden_op.size())
+        gru_op, self.hidden_op = self.gru_op(c_contx_c.permute(1, 0, 2), self.hidden_op)
         gru_op = gru_op.permute(1, 0, 2) # revert to (N, L2, Hs# )
         # print("gru_op:", gru_op.size())
-        end_pred = gru_op[:, -1, :self.hidden_size] # forward direction
-        start_pred = gru_op[:, -1, self.hidden_size:] # reverse direction
+
+        end_pred = gru_op[:, -1, :self.hidden_size*2*self.dirs] # forward direction
+        start_pred = gru_op[:, -1, self.hidden_size*2*self.dirs:] # reverse direction
         
         # print("gru start, end preds:", start_pred.size(), end_pred.size())
         out_start = F.log_softmax(self.decoder_start(start_pred), dim=-1)
@@ -226,14 +246,17 @@ class ModelV2(ModelV1):
     def fit(self, X, y):
         opt = self.opt(self.parameters(), self.lr)
         losses = [] # epoch loss
+        bs = self.batch_size
+
+        print("batch_size:", bs)
+        print("batches:", len(X)/bs)
         for epoch in range(self.epochs):
             print("epoch:", epoch)
-            bs = self.batch_size
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
                 #print("batch:", bindex)                    
                 self.hidden_c, self.hidden_q = self.init_hidden(), self.init_hidden()
-                self.hidden_op = self.init_hidden()
+                self.hidden_op = self.init_hidden_2()
                 # print(h.size(), c.size())
                 opt.zero_grad()
                 Xb = X[i:i+bs]
@@ -253,7 +276,7 @@ class ModelV2(ModelV1):
                 print(bindex, ':', round(bloss.data[0], 4))
                 bloss.backward()
                 opt.step()
-            loss /= bs
+            loss /= (len(y)/bs)
             losses.append(loss)
             print("\nloss (epoch):", losses[-1], end=', change: ')
             if len(losses)>1:
