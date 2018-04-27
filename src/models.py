@@ -78,13 +78,16 @@ class ModelV1(nn.Module):
 
     def fit(self, X, y):
         opt = self.opt(self.parameters(), self.lr)
-        losses = [] 
+        losses = [] # epoch loss
+        bs = self.batch_size
+
+        print("batch_size:", bs)
+        print("batches:", len(X)/bs)
         for epoch in range(self.epochs):
             print("epoch:", epoch)
-            bs = self.batch_size
-            bloss = 0.0 # epoch loss
+            loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
-                #print("batch:", bindex)                    
+                #print("batch:", bindex) 
                 h, c = self.init_hidden(), self.init_hidden()
                 self.hidden = (h, c)
                 # print(h.size(), c.size())
@@ -98,16 +101,17 @@ class ModelV1(nn.Module):
                 
                 yb_spandiff = yb[:, 1] - yb[:, 0]
                 pred_span = self.get_span_indices(pred)
+                # print(pred_span)
                 pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
                 
-                loss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
+                bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
                      + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
-                bloss += loss.data[0] # batch loss
-                print(bindex, end=', ')
-                loss.backward()
+                loss += bloss.item()
+                print(bindex, ':', bloss.item())
+                bloss.backward()
                 opt.step()
-            bloss /= bs
-            losses.append(bloss)
+            loss /= (len(y)/bs)
+            losses.append(loss)
             print("\nloss (epoch):", losses[-1], end=', change: ')
             if len(losses)>1:
                 diff = losses[-2]-losses[-1]
@@ -156,10 +160,21 @@ class ModelV2(ModelV1):
         
         self.encoder_c = nn.Embedding(self.vocab_size, self.emb_dim)
         self.encoder_q = nn.Embedding(self.vocab_size, self.emb_dim)
-        self.gru_c = nn.GRU(self.emb_dim, self.hidden_size, self.n_layers, bidirectional=self.bidir)
-        self.gru_q = nn.GRU(self.emb_dim, self.hidden_size, self.n_layers, bidirectional=self.bidir)
-        self.lin_q = nn.Linear(self.hidden_size*self.dirs, self.hidden_size*self.dirs)
-        self.gru_op = nn.GRU(3*self.dirs*self.hidden_size, 2*self.dirs*self.hidden_size, self.n_layers, bidirectional=self.bidir)
+
+        self.gru_c = nn.GRU(self.emb_dim, self.hidden_size, self.n_layers)
+        self.gru_q = nn.GRU(self.emb_dim, self.hidden_size, self.n_layers)
+
+        self.lin_q = nn.Linear(self.hidden_size, self.hidden_size)
+
+        self.gru_coatt = nn.GRU(3*self.hidden_size, 2*self.dirs*self.hidden_size, self.n_layers, bidirectional=self.bidir)
+
+        self.gru_bmod1 = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers)
+        self.gru_bmod2 = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers)
+
+        self.ans_ptr_1 = nn.Linear(4*self.hidden_size*self.dirs, self.hidden_size) #V
+        self.ans_ptr_2 = nn.Linear(self.hidden_size, self.hidden_size) #W
+        self.ans_ptr_3 = nn.Linear(self.hidden_size, 1) #v
+
         self.decoder_start = nn.Linear(self.hidden_size*2*self.dirs, self.output_size)
         self.decoder_end = nn.Linear(self.hidden_size*2*self.dirs, self.output_size)
         self.init_weights()
@@ -168,8 +183,17 @@ class ModelV2(ModelV1):
         weight_scale = 0.01
         self.encoder_c.weight.data = self.vocab_weights
         self.encoder_q.weight.data = self.vocab_weights
+        
         self.lin_q.bias.data.fill_(0)
         self.lin_q.weight.data.uniform_(-weight_scale, weight_scale)
+        
+        self.ans_ptr_1.bias.data.fill_(0)
+        self.ans_ptr_1.weight.data.uniform_(-weight_scale, weight_scale)
+        self.ans_ptr_2.bias.data.fill_(0)
+        self.ans_ptr_2.weight.data.uniform_(-weight_scale, weight_scale)
+        self.ans_ptr_3.bias.data.fill_(0)
+        self.ans_ptr_3.weight.data.uniform_(-weight_scale, weight_scale)
+
         self.decoder_start.bias.data.fill_(0)
         self.decoder_start.weight.data.uniform_(-weight_scale, weight_scale)
         self.decoder_end.bias.data.fill_(0)
@@ -180,14 +204,21 @@ class ModelV2(ModelV1):
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size).uniform_(-weight_scale, weight_scale))
+        return var(weight.new(self.n_layers, bs, self.hidden_size).zero_())
 
-    def init_hidden_2(self, bs=None): # for context_attention LSTM
+    def init_hidden_coatt(self, bs=None): # for context_attention GRU
         weight_scale = 0.01
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs).uniform_(-weight_scale, weight_scale))
+        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs).zero_())
+
+    def init_hidden_bmod(self, bs=None):
+        weight_scale = 0.01
+        if bs is None:
+            bs = self.batch_size
+        weight = next(self.parameters()).data
+        return var(weight.new(self.n_layers, bs, self.hidden_size).zero_())
 
     def forward(self, inputs):
         if len(inputs)==1:
@@ -196,6 +227,7 @@ class ModelV2(ModelV1):
             inputs = var(torch.LongTensor(inputs))
         if len(inputs.size())<2:
             inputs = inputs.unsqueeze(0)
+        # print("inputs:", inputs.size())
         inputs_c = inputs[:, :self.c_size]
         inputs_q = inputs[:, self.c_size:self.c_size+self.q_size]
         embeds_c = self.encoder_c(inputs_c).permute(1, 0, 2) # get glove repr
@@ -226,18 +258,48 @@ class ModelV2(ModelV1):
         # print("c_op:", c_op.size())
         c_contx_c = torch.cat((contx_c.permute(0, 2, 1), c_op.permute(1, 0, 2)), 2)
         # print("c_contx_c:", c_contx_c.size())
-        # print("hidden_op:", self.hidden_op.size())
-        gru_op, self.hidden_op = self.gru_op(c_contx_c.permute(1, 0, 2), self.hidden_op)
-        gru_op = gru_op.permute(1, 0, 2) # revert to (N, L2, Hs# )
-        # print("gru_op:", gru_op.size())
+        # print("hidden_coatt:", self.hidden_coatt.size())
+        coatt_op, self.hidden_coatt = self.gru_coatt(c_contx_c.permute(1, 0, 2), self.hidden_coatt)
+        coatt_op = coatt_op.permute(1, 0, 2) # revert to (N, L2, Hs# )
+        # print("coatt_op:", coatt_op.size())
 
-        end_pred = gru_op[:, -1, :self.hidden_size*2*self.dirs] # forward direction
-        start_pred = gru_op[:, -1, self.hidden_size*2*self.dirs:] # reverse direction
+        # end_pred = coatt_op[:, -1, :self.hidden_size*2*self.dirs] # forward direction
+        # start_pred = coatt_op[:, -1, self.hidden_size*2*self.dirs:] # reverse direction
         
-        # print("gru start, end preds:", start_pred.size(), end_pred.size())
+        # answer pointer - boundary model:
+
+        f1 = self.ans_ptr_1(coatt_op)
+        # print("f1 (part1):", f1.size())
+        H_beta = torch.bmm(self.beta.unsqueeze(1), coatt_op)
+        # print("H_beta:", H_beta.size())
+        # print("old hidden bmod:", self.hidden_bmod1.size())
+        bmod_1, self.hidden_bmod1 = self.gru_bmod1(H_beta.permute(1, 0, 2), self.hidden_bmod1)
+        # print("new hidden_bmod1:", self.hidden_bmod1.size())
+        W_h = self.ans_ptr_2(self.hidden_bmod1).repeat(self.c_size, 1, 1)
+        # print("W_h:", W_h.size())
+        f1 += W_h.permute(1, 0, 2)
+        f1 = F.tanh(f1)
+        # print("f1:", f1.size())
+        out_start = F.log_softmax(self.ans_ptr_3(f1), 0).squeeze()
+        # print("out start:", out_start.size())
+
+        f2 = self.ans_ptr_1(coatt_op)
+        # print("f2 (part1):", f2.size())
+        bmod_2, self.hidden_bmod2 = self.gru_bmod2(H_beta.permute(1, 0, 2), self.hidden_bmod2)
+        W_h = self.ans_ptr_2(self.hidden_bmod2).repeat(self.c_size, 1, 1)
+        # print("W_h:", W_h.size())
+        f2 += W_h.permute(1, 0, 2)
+        f2 = F.tanh(f2)
+        # print("f2:", f2.size())
+        out_end = F.log_softmax(self.ans_ptr_3(f2), 0).squeeze()
+        # print("out end:", out_end.size())
+
+        """ 
+        print("gru start, end preds:", start_pred.size(), end_pred.size())
         out_start = F.log_softmax(self.decoder_start(start_pred), dim=-1)
         out_end = F.log_softmax(self.decoder_end(end_pred), dim=-1)
-        # print("outs:", out_start.size(), out_end.size())
+        print("outs:", out_start.size(), out_end.size())
+        """
         out = torch.cat((out_start, out_end), 1)
         # print("out:", out.size())
 
@@ -256,8 +318,11 @@ class ModelV2(ModelV1):
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
                 #print("batch:", bindex)                    
                 self.hidden_c, self.hidden_q = self.init_hidden(), self.init_hidden()
-                self.hidden_op = self.init_hidden_2()
-                # print(h.size(), c.size())
+                self.hidden_coatt = self.init_hidden_coatt()
+                self.hidden_bmod1 = self.init_hidden_bmod()
+                self.hidden_bmod2 = self.init_hidden_bmod()
+                self.beta = var(torch.ones((bs, self.c_size,))*(1/self.c_size))
+                # print("beta:", self.beta.size())
                 opt.zero_grad()
                 Xb = X[i:i+bs]
                 Xb = torch.LongTensor(Xb)
@@ -268,12 +333,13 @@ class ModelV2(ModelV1):
                 
                 yb_spandiff = yb[:, 1] - yb[:, 0]
                 pred_span = self.get_span_indices(pred)
+                # print(pred_span)
                 pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
                 
                 bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
                      + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
-                loss += bloss.data[0]
-                print(bindex, ':', round(bloss.data[0], 4))
+                loss += bloss.item()
+                print(bindex, ':', bloss.item())
                 bloss.backward()
                 opt.step()
             loss /= (len(y)/bs)
