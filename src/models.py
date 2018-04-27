@@ -3,6 +3,7 @@ from torch import nn, optim
 from torch.autograd import Variable as var
 from torch.nn import functional as F
 from utils import setup_glove
+from evaluate import exact_match_score, f1_score
 
 class ModelV1(nn.Module):
     """
@@ -25,14 +26,19 @@ class ModelV1(nn.Module):
         self.print_every = config.get("print_every", 10)
         
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
-        if self.opt == 'Adam':
+        if self.opt == 'RMSProp':
+            self.opt = optim.RMSProp
+        elif self.opt == 'Adam':
             self.opt = optim.Adam
+        elif self.opt == 'Adamax':
+            self.opt = optim.Adamax
+        elif self.opt == 'AdaDelta':
+            self.opt = optim.Adadelta
         else:
             self.opt = optim.SGD
-        
+
         self.encoder = nn.Embedding(self.vocab_size, self.emb_dim)
         self.lstm = nn.LSTM(self.emb_dim, self.hidden_size, self.n_layers, bidirectional=self.bidir)
-        self.mul_v = nn.Linear(self.hidden_size)
         self.decoder_start = nn.Linear(self.hidden_size, self.output_size)
         self.decoder_end = nn.Linear(self.hidden_size, self.output_size)
         self.init_weights()
@@ -49,7 +55,12 @@ class ModelV1(nn.Module):
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size).zero_())
+        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size)).zero_()
+
+    def init_params(self, bs=None):
+        h, c = self.init_hidden(bs), self.init_hidden(bs)
+        self.hidden = (h, c)
+
         
     def forward(self, inputs):
         if len(inputs)==1:
@@ -65,20 +76,25 @@ class ModelV1(nn.Module):
         # print("lstm op:", lstm_op.size()) # (seq_len, bs, hidden_size*(dirs=2 for bi))
         lstm_op = lstm_op.permute(1, 0, 2) # (seq_len, bs, hdim)->(bs, seq_len, hdim)
         
-        end_pred = lstm_op[:, -1, :self.hidden_size] # forward direction
-        start_pred = lstm_op[:, -1, self.hidden_size:] # reverse direction
+        end_pred = lstm_op[:, 0, :self.hidden_size] # forward direction
+        start_pred = lstm_op[:, 0, self.hidden_size:] # reverse direction
         
         # print("lstm start, end preds:", start_pred.size(), end_pred.size())
         out_start = F.log_softmax(self.decoder_start(start_pred), dim=-1)
         out_end = F.log_softmax(self.decoder_end(end_pred), dim=-1)
         # print("outs:", out_start.size(), out_end.size())
-        out = torch.cat((out_start, out_end), 1)
+        out = torch.cat((out_start, out_end), -1)
+        if len(out.size())<2:
+            out = out.unsqueeze(0)
         # print("out:", out.size())
         return out
 
-    def fit(self, X, y):
+    def fit(self, train_data, val_data):
+        X, y = train_data
+        X_val, y_val = val_data
         opt = self.opt(self.parameters(), self.lr)
-        losses = [] # epoch loss
+        self.losses = [] # epoch loss
+        self.val_losses = []
         bs = self.batch_size
 
         print("batch_size:", bs)
@@ -88,8 +104,7 @@ class ModelV1(nn.Module):
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
                 #print("batch:", bindex) 
-                h, c = self.init_hidden(), self.init_hidden()
-                self.hidden = (h, c)
+                self.init_params(bs)
                 # print(h.size(), c.size())
                 opt.zero_grad()
                 Xb = X[i:i+bs]
@@ -105,21 +120,29 @@ class ModelV1(nn.Module):
                 pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
                 
                 bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
-                     + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
+                      + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
                 loss += bloss.item()
                 print(bindex, ':', bloss.item())
                 bloss.backward()
                 opt.step()
             loss /= (len(y)/bs)
-            losses.append(loss)
-            print("\nloss (epoch):", losses[-1], end=', change: ')
-            if len(losses)>1:
-                diff = losses[-2]-losses[-1]
-                rel_diff = diff/losses[-2]
+            self.losses.append(loss)
+            print("\nloss (epoch):", self.losses[-1], end=', change: ')
+            if len(self.losses)>1:
+                diff = self.losses[-2]-self.losses[-1]
+                rel_diff = diff/self.losses[-2]
                 print("%s"%rel_diff, "%")
             else:
                 print("00.0%")
-        return losses
+            X_val = torch.LongTensor(X_val)
+            y_val = var(torch.LongTensor(y_val))
+            val_preds = self.forward(X_val)
+            vloss = F.nll_loss(val_preds[:, :self.output_size], y_val[:, 0]) \
+                  + F.nll_loss(val_preds[:, self.output_size:], y_val[:, 1])
+            self.val_losses.append(vloss.item()/X_val.size()[0])
+            print("validation loss:", vloss)
+
+        return val_preds, self.losses, self.val_losses
 
     def predict(self, X, bs=None):
         # self.hidden = (self.init_hidden(bs), self.init_hidden(bs))
@@ -134,6 +157,9 @@ class ModelV1(nn.Module):
         return torch.cat((s_index.unsqueeze(1), e_index.unsqueeze(1)), -1)
 
 class ModelV2(ModelV1):
+    """
+    Coattention with Answer Pointer
+    """
     def __init__(self, config):
         super(ModelV1, self).__init__()        
         
@@ -151,10 +177,14 @@ class ModelV2(ModelV1):
         self.opt = config.get("opt", "SGD")
         self.print_every = config.get("print_every", 10)
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
-        if self.opt == 'Adam':
+        if self.opt == 'RMSProp':
+            self.opt = optim.RMSProp
+        elif self.opt == 'Adam':
             self.opt = optim.Adam
         elif self.opt == 'Adamax':
             self.opt = optim.Adamax
+        elif self.opt == 'AdaDelta':
+            self.opt = optim.Adadelta
         else:
             self.opt = optim.SGD
         
@@ -168,8 +198,7 @@ class ModelV2(ModelV1):
 
         self.gru_coatt = nn.GRU(3*self.hidden_size, 2*self.dirs*self.hidden_size, self.n_layers, bidirectional=self.bidir)
 
-        self.gru_bmod1 = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers)
-        self.gru_bmod2 = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers)
+        self.gru_bmod = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers)
 
         self.ans_ptr_1 = nn.Linear(4*self.hidden_size*self.dirs, self.hidden_size) #V
         self.ans_ptr_2 = nn.Linear(self.hidden_size, self.hidden_size) #W
@@ -204,21 +233,27 @@ class ModelV2(ModelV1):
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers, bs, self.hidden_size).zero_())
+        return nn.init.xavier_normal_(var(weight.new(self.n_layers, bs, self.hidden_size)))
 
     def init_hidden_coatt(self, bs=None): # for context_attention GRU
         weight_scale = 0.01
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs).zero_())
+        return nn.init.xavier_normal_(var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs)))
 
     def init_hidden_bmod(self, bs=None):
         weight_scale = 0.01
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers, bs, self.hidden_size).zero_())
+        return nn.init.xavier_normal_(var(weight.new(self.n_layers, bs, self.hidden_size)))
+
+    def init_params(self, bs=None):
+        self.hidden_c, self.hidden_q = self.init_hidden(bs), self.init_hidden(bs)
+        self.hidden_coatt = self.init_hidden_coatt(bs)
+        self.hidden_bmod1 = self.init_hidden_bmod(bs)
+        self.beta = var(torch.ones((bs, self.c_size,))*(1/self.c_size))
 
     def forward(self, inputs):
         if len(inputs)==1:
@@ -245,15 +280,15 @@ class ModelV2(ModelV1):
         # for bmm: c_op : (L1, N, H)->(N, L1, H), q_op : (L2, N, H) -> (N, H, L2)
         cq_op = torch.bmm(c_op.permute(1, 0, 2), q_op.permute(1, 2, 0))
         # print("cq_op:", cq_op.size())
-        att_c = F.softmax(cq_op, dim=0)
-        att_q = F.softmax(cq_op.permute(0, 2, 1), dim=0) # transpose while keeping batch
-        # print("att_c:", att_c.size(), "att_q:", att_q.size())
-        contx_q = torch.bmm(att_q, c_op.permute(1, 0, 2))
+        att_q = F.softmax(cq_op, dim=0)
+        att_c = F.softmax(cq_op.permute(0, 2, 1), dim=0) # transpose while keeping batch
+        # print("att_c:", att_c.size(), "att_q:", att_q.permute(0,2,1).size())
+        contx_q = torch.bmm(att_q.permute(0,2,1), c_op.permute(1, 0, 2))
         # print("contx_q:", contx_q.size())
         q_contx_q = torch.cat((q_op, contx_q.permute(1, 0, 2)), 2)
         # print("q_contx_q:", q_contx_q.size())
         # print(att_c.size(), q_contx_q.size())
-        contx_c = torch.bmm(q_contx_q.permute(1, 2, 0), att_c.permute(0, 2, 1))
+        contx_c = torch.bmm(q_contx_q.permute(1, 2, 0), att_c)
         # print("contx_c:", contx_c.size())
         # print("c_op:", c_op.size())
         c_contx_c = torch.cat((contx_c.permute(0, 2, 1), c_op.permute(1, 0, 2)), 2)
@@ -262,6 +297,7 @@ class ModelV2(ModelV1):
         coatt_op, self.hidden_coatt = self.gru_coatt(c_contx_c.permute(1, 0, 2), self.hidden_coatt)
         coatt_op = coatt_op.permute(1, 0, 2) # revert to (N, L2, Hs# )
         # print("coatt_op:", coatt_op.size())
+
 
         # end_pred = coatt_op[:, -1, :self.hidden_size*2*self.dirs] # forward direction
         # start_pred = coatt_op[:, -1, self.hidden_size*2*self.dirs:] # reverse direction
@@ -272,26 +308,24 @@ class ModelV2(ModelV1):
         # print("f1 (part1):", f1.size())
         H_beta = torch.bmm(self.beta.unsqueeze(1), coatt_op)
         # print("H_beta:", H_beta.size())
-        # print("old hidden bmod:", self.hidden_bmod1.size())
-        bmod_1, self.hidden_bmod1 = self.gru_bmod1(H_beta.permute(1, 0, 2), self.hidden_bmod1)
-        # print("new hidden_bmod1:", self.hidden_bmod1.size())
+        # print("hidden bmod:", self.hidden_bmod1.size())
         W_h = self.ans_ptr_2(self.hidden_bmod1).repeat(self.c_size, 1, 1)
         # print("W_h:", W_h.size())
         f1 += W_h.permute(1, 0, 2)
         f1 = F.tanh(f1)
         # print("f1:", f1.size())
-        out_start = F.log_softmax(self.ans_ptr_3(f1), 0).squeeze()
+        out_start = F.softmax(self.ans_ptr_3(f1), 0).squeeze()
         # print("out start:", out_start.size())
 
         f2 = self.ans_ptr_1(coatt_op)
         # print("f2 (part1):", f2.size())
-        bmod_2, self.hidden_bmod2 = self.gru_bmod2(H_beta.permute(1, 0, 2), self.hidden_bmod2)
+        bmod_2, self.hidden_bmod2 = self.gru_bmod(H_beta.permute(1, 0, 2), self.hidden_bmod1)
         W_h = self.ans_ptr_2(self.hidden_bmod2).repeat(self.c_size, 1, 1)
         # print("W_h:", W_h.size())
         f2 += W_h.permute(1, 0, 2)
         f2 = F.tanh(f2)
         # print("f2:", f2.size())
-        out_end = F.log_softmax(self.ans_ptr_3(f2), 0).squeeze()
+        out_end = F.softmax(self.ans_ptr_3(f2), 0).squeeze()
         # print("out end:", out_end.size())
 
         """ 
@@ -300,14 +334,19 @@ class ModelV2(ModelV1):
         out_end = F.log_softmax(self.decoder_end(end_pred), dim=-1)
         print("outs:", out_start.size(), out_end.size())
         """
-        out = torch.cat((out_start, out_end), 1)
+        out = torch.cat((out_start, out_end), -1)
+        if len(out.size())<2:
+            out = out.unsqueeze(0)
         # print("out:", out.size())
 
         return out
 
-    def fit(self, X, y):
+    def fit(self, train_data, val_data):
+        X, y = train_data
+        X_val, y_val = val_data
         opt = self.opt(self.parameters(), self.lr)
-        losses = [] # epoch loss
+        self.losses = [] # epoch loss
+        self.val_losses = []
         bs = self.batch_size
 
         print("batch_size:", bs)
@@ -316,13 +355,8 @@ class ModelV2(ModelV1):
             print("epoch:", epoch)
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
-                #print("batch:", bindex)                    
-                self.hidden_c, self.hidden_q = self.init_hidden(), self.init_hidden()
-                self.hidden_coatt = self.init_hidden_coatt()
-                self.hidden_bmod1 = self.init_hidden_bmod()
-                self.hidden_bmod2 = self.init_hidden_bmod()
-                self.beta = var(torch.ones((bs, self.c_size,))*(1/self.c_size))
-                # print("beta:", self.beta.size())
+                #print("batch:", bindex)
+                self.init_params(bs)               
                 opt.zero_grad()
                 Xb = X[i:i+bs]
                 Xb = torch.LongTensor(Xb)
@@ -336,19 +370,28 @@ class ModelV2(ModelV1):
                 # print(pred_span)
                 pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
                 
-                bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
-                     + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
+                bloss = F.cross_entropy(pred[:, :self.output_size], yb[:, 0]) \
+                      + F.cross_entropy(pred[:, self.output_size:], yb[:, 1])
                 loss += bloss.item()
                 print(bindex, ':', bloss.item())
                 bloss.backward()
                 opt.step()
-            loss /= (len(y)/bs)
-            losses.append(loss)
-            print("\nloss (epoch):", losses[-1], end=', change: ')
-            if len(losses)>1:
-                diff = losses[-2]-losses[-1]
-                rel_diff = diff/losses[-2]
+            loss /= len(y)
+            self.losses.append(loss)
+            print("\nloss (epoch):", self.losses[-1], end=', change: ')
+            if len(self.losses)>1:
+                diff = self.losses[-2]-self.losses[-1]
+                rel_diff = diff/self.losses[-2]
                 print("%s"%rel_diff, "%")
             else:
                 print("00.0%")
-        return losses
+            X_val = torch.LongTensor(X_val)
+            y_val = var(torch.LongTensor(y_val))
+            val_preds = self.forward(X_val)
+            vloss = F.cross_entropy(val_preds[:, :self.output_size], y_val[:, 0]) \
+                  + F.cross_entropy(val_preds[:, self.output_size:], y_val[:, 1])
+            self.val_losses.append(vloss.item()/X_val.size()[0])
+            print("validation loss:", vloss.item()/X_val.size()[0])
+
+        return val_preds, self.losses, self.val_losses
+

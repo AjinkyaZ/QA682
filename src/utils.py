@@ -82,9 +82,10 @@ def vectorize(input_seq, max_len):
         glove_vec = padding_zeros + glove_vec
     return glove_vec
     
-def make_data(raw_X, raw_y):
+def make_data(raw_X, raw_y, max_length):
     X = []
     y = []
+    skipped = 0
     for i, ((qid, c, q, a), (s, e)) in enumerate(zip(raw_X, raw_y)):
         c_tokens = tokenize(c.lower())
         try:
@@ -110,6 +111,16 @@ def make_data(raw_X, raw_y):
         context_rep = vectorize(c_tokens, 600)
         q_tokens = tokenize(q.lower())
         ques_rep = vectorize(q_tokens, 100)
-        X.append(context_rep+ques_rep)
-        y.append((start_tok_idx, end_tok_idx))
+        try:
+            y.append((start_tok_idx, end_tok_idx))
+            X.append(context_rep+ques_rep)
+        except:
+            skipped += 1
+            continue
+        if len(X)==len(y) and len(X)<max_length:
+            continue
+        else:
+            break
+    if skipped:
+        print("Skipped:", skipped)
     return X, y
