@@ -4,6 +4,7 @@ from torch.autograd import Variable as var
 from torch.nn import functional as F
 from utils import setup_glove
 from evaluate import exact_match_score, f1_score
+from time import time
 
 class ModelV1(nn.Module):
     """
@@ -233,22 +234,22 @@ class ModelV2(ModelV1):
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return nn.init.xavier_normal_(var(weight.new(self.n_layers, bs, self.hidden_size)))
+        return var(weight.new(self.n_layers, bs, self.hidden_size)).zero_()
 
     def init_hidden_coatt(self, bs=None): # for context_attention GRU
         weight_scale = 0.01
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return nn.init.xavier_normal_(var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs)))
+        return var(weight.new(self.n_layers*self.dirs, bs, self.hidden_size*2*self.dirs)).zero_()
 
     def init_hidden_bmod(self, bs=None):
         weight_scale = 0.01
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return nn.init.xavier_normal_(var(weight.new(self.n_layers, bs, self.hidden_size)))
-
+        return var(weight.new(self.n_layers, bs, self.hidden_size)).zero_()
+ 
     def init_params(self, bs=None):
         self.hidden_c, self.hidden_q = self.init_hidden(bs), self.init_hidden(bs)
         self.hidden_coatt = self.init_hidden_coatt(bs)
@@ -352,6 +353,7 @@ class ModelV2(ModelV1):
         print("batch_size:", bs)
         print("batches:", len(X)/bs)
         for epoch in range(self.epochs):
+            tic = time()
             print("epoch:", epoch)
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
@@ -373,9 +375,10 @@ class ModelV2(ModelV1):
                 bloss = F.cross_entropy(pred[:, :self.output_size], yb[:, 0]) \
                       + F.cross_entropy(pred[:, self.output_size:], yb[:, 1])
                 loss += bloss.item()
-                print(bindex, ':', bloss.item())
+                print('batch:', bindex, '-', bloss.item())
                 bloss.backward()
                 opt.step()
+            toc = time()-tic
             loss /= len(y)
             self.losses.append(loss)
             print("\nloss (epoch):", self.losses[-1], end=', change: ')
@@ -384,14 +387,17 @@ class ModelV2(ModelV1):
                 rel_diff = diff/self.losses[-2]
                 print("%s"%rel_diff, "%")
             else:
-                print("00.0%")
-            X_val = torch.LongTensor(X_val)
-            y_val = var(torch.LongTensor(y_val))
-            val_preds = self.forward(X_val)
-            vloss = F.cross_entropy(val_preds[:, :self.output_size], y_val[:, 0]) \
-                  + F.cross_entropy(val_preds[:, self.output_size:], y_val[:, 1])
-            self.val_losses.append(vloss.item()/X_val.size()[0])
-            print("validation loss:", vloss.item()/X_val.size()[0])
+                print("00.0%", end=", took: %s seconds\n"%round(toc, 3))
+            vloss = 0.0
+            for bindex,  i in enumerate(range(0, len(y_val)-bs+1, bs)):
+                X_valb = torch.LongTensor(X_val[i:i+bs])
+                y_valb = var(torch.LongTensor(y_val[i:i+bs]))
+                val_preds = self.forward(X_valb)
+                vloss += (F.cross_entropy(val_preds[:, :self.output_size], y_valb[:, 0]) \
+                      + F.cross_entropy(val_preds[:, self.output_size:], y_valb[:, 1])).item()
+            vloss /= len(y_val)
+            self.val_losses.append(vloss)
+            print("validation loss:", vloss)
 
         return val_preds, self.losses, self.val_losses
 

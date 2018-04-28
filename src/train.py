@@ -5,6 +5,7 @@ from pprint import pprint
 import json
 import _pickle as pkl
 from time import time
+from random import shuffle, seed
 
 glove = setup_glove()
 print(glove.vectors.size())
@@ -24,8 +25,15 @@ print("Answer:", example_X[3])
 _, X, y = make_data([example_X], [example_y], 1, glove)
 print(len(tokenize(example_X[1])))
 print(get_answer_span(y[0], example_X[1]))
-num_ex_train = 512
+
+seed(1)
+zipped_data = list(zip(data['X_train'], data['y_train']))
+shuffle(zipped_data)
+data['X_train'], data['y_train'] = list(zip(*zipped_data))
+
+num_ex_train = 5120
 num_ex_val = 64
+
 idxs_train, X_train, y_train = make_data(data['X_train'], data['y_train'], num_ex_train, glove)
 idxs_val, X_val, y_val = make_data(data['X_val'], data['y_val'], num_ex_val, glove)
 print(len(X_train), len(y_train), len(X_val), len(y_val))
@@ -33,8 +41,8 @@ print(len(X_train), len(y_train), len(X_val), len(y_val))
 from models import *
 
 conf = {"vocab": glove.vectors,
-        "learning_rate": 0.4,
-        "epochs": 5,
+        "learning_rate": 0.05,
+        "epochs": 10,
         "hidden_size": 50,
         "batch_size": 64,
         "opt": "Adamax",
