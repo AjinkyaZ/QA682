@@ -125,7 +125,7 @@ class ModelV1(nn.Module):
                 print(bindex, ':', bloss.item())
                 bloss.backward()
                 opt.step()
-            loss /= (len(y)/bs)
+            loss /= len(y)
             self.losses.append(loss)
             print("\nloss (epoch):", self.losses[-1], end=', change: ')
             if len(self.losses)>1:
@@ -140,7 +140,7 @@ class ModelV1(nn.Module):
             vloss = F.nll_loss(val_preds[:, :self.output_size], y_val[:, 0]) \
                   + F.nll_loss(val_preds[:, self.output_size:], y_val[:, 1])
             self.val_losses.append(vloss.item()/X_val.size()[0])
-            print("validation loss:", vloss)
+            print("validation loss:", vloss.item()/X_val.size()[0])
 
         return val_preds, self.losses, self.val_losses
 

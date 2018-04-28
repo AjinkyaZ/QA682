@@ -1,7 +1,6 @@
 import torch
 import torchtext.vocab as vocab
 
-
 def setup_glove(name='6B', DIM=50):
     glove = vocab.GloVe(name='6B', dim=DIM)
     
@@ -67,7 +66,7 @@ def get_answer_span(tok_idxs, input_txt):
     s, e = tok_idxs
     return " ".join(input_seq[s:e+1])
 
-def vectorize(input_seq, max_len):
+def vectorize(input_seq, max_len, glove):
     glove_vec = []
     glove_vec.append(400000) # <sos> token
     for w in input_seq:
@@ -82,9 +81,10 @@ def vectorize(input_seq, max_len):
         glove_vec = padding_zeros + glove_vec
     return glove_vec
     
-def make_data(raw_X, raw_y, max_length):
+def make_data(raw_X, raw_y, max_length, glove):
     X = []
     y = []
+    idxs = []
     skipped = 0
     for i, ((qid, c, q, a), (s, e)) in enumerate(zip(raw_X, raw_y)):
         c_tokens = tokenize(c.lower())
@@ -108,12 +108,13 @@ def make_data(raw_X, raw_y, max_length):
                 if i in tok_idx_map["end"]: # get prev tok
                     end_tok_idx, end_w = tok_idx_map["end"][i]
                     break
-        context_rep = vectorize(c_tokens, 600)
+        context_rep = vectorize(c_tokens, 600, glove)
         q_tokens = tokenize(q.lower())
-        ques_rep = vectorize(q_tokens, 100)
+        ques_rep = vectorize(q_tokens, 100, glove)
         try:
             y.append((start_tok_idx, end_tok_idx))
             X.append(context_rep+ques_rep)
+            idxs.append(i)
         except:
             skipped += 1
             continue
@@ -123,4 +124,4 @@ def make_data(raw_X, raw_y, max_length):
             break
     if skipped:
         print("Skipped:", skipped)
-    return X, y
+    return idxs, X, y
