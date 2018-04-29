@@ -31,7 +31,7 @@ zipped_data = list(zip(data['X_train'], data['y_train']))
 shuffle(zipped_data)
 data['X_train'], data['y_train'] = list(zip(*zipped_data))
 
-num_ex_train = 5120
+num_ex_train = 1280
 num_ex_val = 64
 
 idxs_train, X_train, y_train = make_data(data['X_train'], data['y_train'], num_ex_train, glove)
@@ -41,9 +41,9 @@ print(len(X_train), len(y_train), len(X_val), len(y_val))
 from models import *
 
 conf = {"vocab": glove.vectors,
-        "learning_rate": 0.05,
-        "epochs": 10,
-        "hidden_size": 50,
+        "learning_rate": 0.1,
+        "epochs": 5,
+        "hidden_size": 100,
         "batch_size": 64,
         "opt": "Adamax",
         "n_layers": 1}
@@ -63,5 +63,5 @@ plt.plot(list(range(len(vlosses))), vlosses)
 plt.show()
 
 model = torch.load('../evaluation/models/%s'%model_name)
-print(model)
-print(model_name)
+# print(model)
+print("Saved to file: %s"%model_name)

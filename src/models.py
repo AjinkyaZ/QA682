@@ -101,6 +101,7 @@ class ModelV1(nn.Module):
         print("batch_size:", bs)
         print("batches:", len(X)/bs)
         for epoch in range(self.epochs):
+            tic = time()
             print("epoch:", epoch)
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
@@ -126,6 +127,7 @@ class ModelV1(nn.Module):
                 print(bindex, ':', bloss.item())
                 bloss.backward()
                 opt.step()
+            toc = time()-tic
             loss /= len(y)
             self.losses.append(loss)
             print("\nloss (epoch):", self.losses[-1], end=', change: ')
@@ -134,14 +136,17 @@ class ModelV1(nn.Module):
                 rel_diff = diff/self.losses[-2]
                 print("%s"%rel_diff, "%")
             else:
-                print("00.0%")
-            X_val = torch.LongTensor(X_val)
-            y_val = var(torch.LongTensor(y_val))
-            val_preds = self.forward(X_val)
-            vloss = F.nll_loss(val_preds[:, :self.output_size], y_val[:, 0]) \
-                  + F.nll_loss(val_preds[:, self.output_size:], y_val[:, 1])
-            self.val_losses.append(vloss.item()/X_val.size()[0])
-            print("validation loss:", vloss.item()/X_val.size()[0])
+                print("00.0%", end=", took: %s seconds\n"%round(toc, 3))
+            vloss = 0.0
+            for bindex,  i in enumerate(range(0, len(y_val)-bs+1, bs)):
+                X_valb = torch.LongTensor(X_val[i:i+bs])
+                y_valb = var(torch.LongTensor(y_val[i:i+bs]))
+                val_preds = self.forward(X_valb)
+                vloss += (F.nll_loss(val_preds[:, :self.output_size], y_valb[:, 0]) \
+                      + F.nll_loss(val_preds[:, self.output_size:], y_valb[:, 1])).item()
+            vloss /= len(y_val)
+            self.val_losses.append(vloss)
+            print("validation loss:", vloss)
 
         return val_preds, self.losses, self.val_losses
 
@@ -315,7 +320,7 @@ class ModelV2(ModelV1):
         f1 += W_h.permute(1, 0, 2)
         f1 = F.tanh(f1)
         # print("f1:", f1.size())
-        out_start = F.softmax(self.ans_ptr_3(f1), 0).squeeze()
+        out_start = F.log_softmax(self.ans_ptr_3(f1), 0).squeeze()
         # print("out start:", out_start.size())
 
         f2 = self.ans_ptr_1(coatt_op)
@@ -326,7 +331,7 @@ class ModelV2(ModelV1):
         f2 += W_h.permute(1, 0, 2)
         f2 = F.tanh(f2)
         # print("f2:", f2.size())
-        out_end = F.softmax(self.ans_ptr_3(f2), 0).squeeze()
+        out_end = F.log_softmax(self.ans_ptr_3(f2), 0).squeeze()
         # print("out end:", out_end.size())
 
         """ 
@@ -372,8 +377,8 @@ class ModelV2(ModelV1):
                 # print(pred_span)
                 pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
                 
-                bloss = F.cross_entropy(pred[:, :self.output_size], yb[:, 0]) \
-                      + F.cross_entropy(pred[:, self.output_size:], yb[:, 1])
+                bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
+                      + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
                 loss += bloss.item()
                 print('batch:', bindex, '-', bloss.item())
                 bloss.backward()
@@ -393,11 +398,10 @@ class ModelV2(ModelV1):
                 X_valb = torch.LongTensor(X_val[i:i+bs])
                 y_valb = var(torch.LongTensor(y_val[i:i+bs]))
                 val_preds = self.forward(X_valb)
-                vloss += (F.cross_entropy(val_preds[:, :self.output_size], y_valb[:, 0]) \
-                      + F.cross_entropy(val_preds[:, self.output_size:], y_valb[:, 1])).item()
+                vloss += (F.nll_loss(val_preds[:, :self.output_size], y_valb[:, 0]) \
+                      + F.nll_loss(val_preds[:, self.output_size:], y_valb[:, 1])).item()
             vloss /= len(y_val)
             self.val_losses.append(vloss)
             print("validation loss:", vloss)
 
         return val_preds, self.losses, self.val_losses
-
