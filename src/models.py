@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from utils import setup_glove
 from evaluate import exact_match_score, f1_score
 from time import time
+from pprint import pprint
 
 class ModelV1(nn.Module):
     """
@@ -123,12 +124,12 @@ class ModelV1(nn.Module):
                 
                 bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
                       + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
-                loss += bloss.item()
+                loss += bloss.item()/bs
                 print(bindex, ':', bloss.item())
                 bloss.backward()
                 opt.step()
             toc = time()-tic
-            loss /= len(y)
+            loss /= (len(y)/bs)
             self.losses.append(loss)
             print("\nloss (epoch):", self.losses[-1], end=', change: ')
             if len(self.losses)>1:
@@ -253,7 +254,7 @@ class ModelV2(ModelV1):
         if bs is None:
             bs = self.batch_size
         weight = next(self.parameters()).data
-        return var(weight.new(self.n_layers, bs, self.hidden_size)).zero_()
+        return var(weight.new(self.n_layers, bs, self.hidden_size)).uniform_(-weight_scale, weight_scale)
  
     def init_params(self, bs=None):
         self.hidden_c, self.hidden_q = self.init_hidden(bs), self.init_hidden(bs)
@@ -268,78 +269,45 @@ class ModelV2(ModelV1):
             inputs = var(torch.LongTensor(inputs))
         if len(inputs.size())<2:
             inputs = inputs.unsqueeze(0)
-        # print("inputs:", inputs.size())
+
         inputs_c = inputs[:, :self.c_size]
         inputs_q = inputs[:, self.c_size:self.c_size+self.q_size]
         embeds_c = self.encoder_c(inputs_c).permute(1, 0, 2) # get glove repr
-        # print("embeds_c:", embeds_c.size())
         embeds_q = self.encoder_q(inputs_q).permute(1, 0, 2) # get glove repr
-        # print("embeds_q:", embeds_q.size())
 
         c_op, self.hidden_c = self.gru_c(embeds_c, self.hidden_c)
-        # print("c_op:", c_op.size())
         q_op, self.hidden_q = self.gru_q(embeds_q, self.hidden_q)
-        # print("q_op:", q_op.size())
+
+        # coattention network
 
         q_op = F.tanh(self.lin_q(q_op))
-        # print("q_op:", q_op.size())
-        # for bmm: c_op : (L1, N, H)->(N, L1, H), q_op : (L2, N, H) -> (N, H, L2)
         cq_op = torch.bmm(c_op.permute(1, 0, 2), q_op.permute(1, 2, 0))
-        # print("cq_op:", cq_op.size())
         att_q = F.softmax(cq_op, dim=0)
         att_c = F.softmax(cq_op.permute(0, 2, 1), dim=0) # transpose while keeping batch
-        # print("att_c:", att_c.size(), "att_q:", att_q.permute(0,2,1).size())
         contx_q = torch.bmm(att_q.permute(0,2,1), c_op.permute(1, 0, 2))
-        # print("contx_q:", contx_q.size())
         q_contx_q = torch.cat((q_op, contx_q.permute(1, 0, 2)), 2)
-        # print("q_contx_q:", q_contx_q.size())
-        # print(att_c.size(), q_contx_q.size())
         contx_c = torch.bmm(q_contx_q.permute(1, 2, 0), att_c)
-        # print("contx_c:", contx_c.size())
-        # print("c_op:", c_op.size())
         c_contx_c = torch.cat((contx_c.permute(0, 2, 1), c_op.permute(1, 0, 2)), 2)
-        # print("c_contx_c:", c_contx_c.size())
-        # print("hidden_coatt:", self.hidden_coatt.size())
         coatt_op, self.hidden_coatt = self.gru_coatt(c_contx_c.permute(1, 0, 2), self.hidden_coatt)
         coatt_op = coatt_op.permute(1, 0, 2) # revert to (N, L2, Hs# )
-        # print("coatt_op:", coatt_op.size())
 
 
-        # end_pred = coatt_op[:, -1, :self.hidden_size*2*self.dirs] # forward direction
-        # start_pred = coatt_op[:, -1, self.hidden_size*2*self.dirs:] # reverse direction
-        
         # answer pointer - boundary model:
 
         f1 = self.ans_ptr_1(coatt_op)
-        # print("f1 (part1):", f1.size())
         H_beta = torch.bmm(self.beta.unsqueeze(1), coatt_op)
-        # print("H_beta:", H_beta.size())
-        # print("hidden bmod:", self.hidden_bmod1.size())
         W_h = self.ans_ptr_2(self.hidden_bmod1).repeat(self.c_size, 1, 1)
-        # print("W_h:", W_h.size())
         f1 += W_h.permute(1, 0, 2)
         f1 = F.tanh(f1)
-        # print("f1:", f1.size())
         out_start = F.log_softmax(self.ans_ptr_3(f1), 0).squeeze()
-        # print("out start:", out_start.size())
 
         f2 = self.ans_ptr_1(coatt_op)
-        # print("f2 (part1):", f2.size())
         bmod_2, self.hidden_bmod2 = self.gru_bmod(H_beta.permute(1, 0, 2), self.hidden_bmod1)
         W_h = self.ans_ptr_2(self.hidden_bmod2).repeat(self.c_size, 1, 1)
-        # print("W_h:", W_h.size())
         f2 += W_h.permute(1, 0, 2)
         f2 = F.tanh(f2)
-        # print("f2:", f2.size())
         out_end = F.log_softmax(self.ans_ptr_3(f2), 0).squeeze()
-        # print("out end:", out_end.size())
 
-        """ 
-        print("gru start, end preds:", start_pred.size(), end_pred.size())
-        out_start = F.log_softmax(self.decoder_start(start_pred), dim=-1)
-        out_end = F.log_softmax(self.decoder_end(end_pred), dim=-1)
-        print("outs:", out_start.size(), out_end.size())
-        """
         out = torch.cat((out_start, out_end), -1)
         if len(out.size())<2:
             out = out.unsqueeze(0)
@@ -373,18 +341,19 @@ class ModelV2(ModelV1):
                 pred = self.forward(Xb) #prediction on batch features
                 
                 yb_spandiff = yb[:, 1] - yb[:, 0]
+                """
                 pred_span = self.get_span_indices(pred)
                 # print(pred_span)
                 pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
-                
+                """
                 bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
                       + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
-                loss += bloss.item()
-                print('batch:', bindex, '-', bloss.item())
+                loss += bloss.item()/bs
+                print(bindex, ':', bloss.item()/bs)
                 bloss.backward()
                 opt.step()
             toc = time()-tic
-            loss /= len(y)
+            loss /= (len(y)/bs)
             self.losses.append(loss)
             print("\nloss (epoch):", self.losses[-1], end=', change: ')
             if len(self.losses)>1:

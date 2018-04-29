@@ -1,19 +1,20 @@
 import torch
 import torchtext.vocab as vocab
+from pprint import pprint
 
 def setup_glove(name='6B', DIM=50):
     glove = vocab.GloVe(name='6B', dim=DIM)
     
-    glove.stoi['<sos>'] = len(glove.stoi)+1
+    glove.stoi['<sos>'] = len(glove.stoi)+1 # 400000
     glove.vectors = torch.cat((glove.vectors, torch.ones(1, DIM)*1))
     
-    glove.stoi['<eos>'] = len(glove.stoi)+1
+    glove.stoi['<eos>'] = len(glove.stoi)+1 # 4000001
     glove.vectors = torch.cat((glove.vectors, torch.ones(1, DIM)*2))
     
-    glove.stoi['<pad>'] = len(glove.stoi)+1
+    glove.stoi['<pad>'] = len(glove.stoi)+1 # 400002
     glove.vectors = torch.cat((glove.vectors, torch.zeros(1, DIM)))
     
-    glove.stoi['<unk>'] = len(glove.stoi)+1 # add token->index for unknown/oov
+    glove.stoi['<unk>'] = len(glove.stoi)+1 # 400003 - add token->index for unknown/oov
     glove.vectors = torch.cat((glove.vectors, torch.ones(1, DIM)*-1)) # add index->vec for unknown/oov
     
     return glove
@@ -28,43 +29,11 @@ def clean(token):
 
 def tokenize(input_txt):
     return [w for w in input_txt.split(" ") if len(clean(w).strip())]
-        
-def token_idx_map(input_txt):
-    input_seq = tokenize(input_txt)
-    tok_idx_map = {"start": {}, "end": {}}
-    curr_word = ""
-    curr_word_idx = 0
 
-    for i, c in enumerate(input_txt):
-        if c != " ":
-            curr_word += c
-            try:
-                input_tok = input_seq[curr_word_idx]
-            except:
-                input_tok = input_seq[curr_word_idx-1] #trailing spaces can cause this exception
-            if curr_word == input_tok:
-                s = i - len(curr_word) + 1
-                e = i + 1 # since span is from [start, end)
-                tok_idx_map["start"][s] = [curr_word_idx, curr_word]  # record what token starts here
-                tok_idx_map["end"][e] = [curr_word_idx, curr_word] # record what token ends here
-                curr_word = ""
-                curr_word_idx += 1
-    assert len(tok_idx_map["start"]) == len(tok_idx_map["end"])
-    return tok_idx_map
-
-def reverse_mapping(tok_idx_map):
-    new_map = {}
-    for k, v in tok_idx_map["start"].items():
-        new_map[v[0]] = [v[1], k] # word, start
-    for k, v in tok_idx_map["end"].items():
-        assert k in new_map
-        new_map[v[0]].append(k) # end
-    return new_map
-
-def get_answer_span(tok_idxs, input_txt):
+def get_answer_span(tok_idxs, padding, input_txt):
     input_seq = tokenize(input_txt)
     s, e = tok_idxs
-    return " ".join(input_seq[s:e+1])
+    return " ".join(input_seq[s-padding:e-padding+1])
 
 def vectorize(input_seq, max_len, glove):
     glove_vec = []
@@ -85,35 +54,29 @@ def make_data(raw_X, raw_y, max_length, glove):
     X = []
     y = []
     idxs = []
+    pad_length = []
     skipped = 0
     for i, ((qid, c, q, a), (s, e)) in enumerate(zip(raw_X, raw_y)):
+        start_tok_idx = len(c[:c.find(a)].split())
+        end_tok_idx = start_tok_idx+(len(a.split()))-1
         c_tokens = tokenize(c.lower())
-        try:
-            tok_idx_map = token_idx_map(c)
-        except:
-            print(c, q, a)
-        #pprint(tok_idx_map)
-        #pprint(reverse_mapping(tok_idx_map))
-        try:
-            start_tok_idx, start_w = tok_idx_map["start"][s]
-        except:
-            for i in range(s, e):
-                if i in tok_idx_map["start"]: # get next tok
-                    start_tok_idx, start_w = tok_idx_map["start"][i]
-                    break
-        try:
-            end_tok_idx, _ = tok_idx_map["end"][e] #only idx, not token
-        except:
-            for i in range(e, s, -1):
-                if i in tok_idx_map["end"]: # get prev tok
-                    end_tok_idx, end_w = tok_idx_map["end"][i]
-                    break
         context_rep = vectorize(c_tokens, 600, glove)
         q_tokens = tokenize(q.lower())
         ques_rep = vectorize(q_tokens, 100, glove)
         try:
-            y.append((start_tok_idx, end_tok_idx))
+            padlen = context_rep.count(400002)+1
+            y.append((start_tok_idx+padlen, end_tok_idx+padlen))
             X.append(context_rep+ques_rep)
+            pad_length.append(padlen)
+            if start_tok_idx+padlen > 600 or end_tok_idx+padlen > 600:
+                print("og span:", (s, e))
+                print("padlen", padlen)
+                print("span (w/o) padlen:", (start_tok_idx, end_tok_idx))
+                print("span (w/ padlen):", y[-1])
+                print("length of passage:", len(c_tokens))
+                print(c)
+                print(a)
+                pprint(tok_idx_map)
             idxs.append(i)
         except:
             skipped += 1
@@ -124,4 +87,4 @@ def make_data(raw_X, raw_y, max_length, glove):
             break
     if skipped:
         print("Skipped:", skipped)
-    return idxs, X, y
+    return idxs, pad_length, X, y
