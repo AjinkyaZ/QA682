@@ -13,7 +13,7 @@ class ModelV1(nn.Module):
     """
     def __init__(self, config):
         super(ModelV1, self).__init__()        
-        
+        self.conf = config
         self.input_size = config.get("input_size", 700)
         self.hidden_size = config.get("hidden_size", 128)
         self.output_size = config.get("output_size", 600)
@@ -25,7 +25,7 @@ class ModelV1(nn.Module):
         self.batch_size = config.get("batch_size", 1)
         self.epochs = config.get("epochs", 5)
         self.opt = config.get("opt", "SGD")
-        self.print_every = config.get("print_every", 10)
+        self.save_every = config.get("save_every", 5)
         
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
         if self.opt == 'RMSProp':
@@ -65,12 +65,16 @@ class ModelV1(nn.Module):
 
         
     def forward(self, inputs):
-        if len(inputs)==1:
-            inputs = var(torch.LongTensor(inputs[0]))
+        if torch.cuda.is_available():
+            if len(inputs)==1:
+                inputs = var(torch.cuda.LongTensor(inputs[0]))
+            else:
+                inputs = var(torch.cuda.LongTensor(inputs))
         else:
-            inputs = var(torch.LongTensor(inputs))
-        if len(inputs.size())<2:
-            inputs = inputs.unsqueeze(0)
+            if len(inputs)==1:
+                inputs = var(torch.LongTensor(inputs[0]))
+            else:
+                inputs = var(torch.LongTensor(inputs))
         embeds = self.encoder(inputs).permute(1, 0, 2) # get glove repr
         # print("embeds:", embeds.size())
         seq_len = embeds.size()[0]
@@ -91,64 +95,85 @@ class ModelV1(nn.Module):
         # print("out:", out.size())
         return out
 
-    def fit(self, train_data, val_data):
+    def fit(self, train_data, val_data, pretrained=False):
+        """
+        pretrained is either False or a dict with params
+        """
         X, y = train_data
         X_val, y_val = val_data
+
+        self.name = "%s_D%s_B%s_E%s_H%s_LR%s_O%s"\
+            %(type(self).__name__, len(X), self.batch_size, self.epochs, self.hidden_size, self.lr, self.conf["opt"])
         opt = self.opt(self.parameters(), self.lr)
-        self.losses = [] # epoch loss
-        self.val_losses = []
+        new_epochs = 0
+        new_data_size = 0
+        if pretrained:
+            new_epochs = pretrained["epochs"]
+            new_data_size = pretrained["new_data"]
+        else:
+            self.losses = [] # epoch loss
+            self.val_losses = []
         bs = self.batch_size
 
         print("batch_size:", bs)
         print("batches:", len(X)/bs)
-        for epoch in range(self.epochs):
+        for epoch in range(self.epochs+new_epochs):
             tic = time()
-            print("epoch:", epoch)
+            print("epoch ", epoch)
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
-                #print("batch:", bindex) 
-                self.init_params(bs)
-                # print(h.size(), c.size())
+                if not pretrained:
+                    self.init_params(bs)               
                 opt.zero_grad()
                 Xb = X[i:i+bs]
+
                 Xb = torch.LongTensor(Xb)
-                # print("Xb:", Xb.size())
                 yb = var(torch.LongTensor(y[i:i+bs]))
-                # print("yb:", yb.size())
+                if torch.cuda.is_available():
+                    Xb = Xb.cuda()
+                    yb = yb.cuda()
+
                 pred = self.forward(Xb) #prediction on batch features
                 
                 yb_spandiff = yb[:, 1] - yb[:, 0]
-                pred_span = self.get_span_indices(pred)
-                # print(pred_span)
-                pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
-                
+
                 bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
                       + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
                 loss += bloss.item()/bs
-                print(bindex, ':', bloss.item())
+                print("batch ", bindex, ':', round(bloss.item()/bs, 6))
                 bloss.backward()
                 opt.step()
             toc = time()-tic
             loss /= (len(y)/bs)
             self.losses.append(loss)
-            print("\nloss (epoch):", self.losses[-1], end=', change: ')
+            print("\nloss (epoch):", round(self.losses[-1], 6), end=', change: ')
             if len(self.losses)>1:
                 diff = self.losses[-2]-self.losses[-1]
                 rel_diff = diff/self.losses[-2]
-                print("%s"%rel_diff, "%")
+                print("%s%%"%(round(rel_diff*100, 4)), end=", took: %s seconds\n"%round(toc, 3))
             else:
                 print("00.0%", end=", took: %s seconds\n"%round(toc, 3))
             vloss = 0.0
             for bindex,  i in enumerate(range(0, len(y_val)-bs+1, bs)):
                 X_valb = torch.LongTensor(X_val[i:i+bs])
                 y_valb = var(torch.LongTensor(y_val[i:i+bs]))
+                if torch.cuda.is_available():
+                    X_valb = X_valb.cuda()
+                    y_valb = y_valb.cuda()
                 val_preds = self.forward(X_valb)
-                vloss += (F.nll_loss(val_preds[:, :self.output_size], y_valb[:, 0]) \
-                      + F.nll_loss(val_preds[:, self.output_size:], y_valb[:, 1])).item()
+                vloss += F.nll_loss(val_preds[:, :self.output_size], y_valb[:, 0]) \
+                      +  F.nll_loss(val_preds[:, self.output_size:], y_valb[:, 1])
             vloss /= len(y_val)
-            self.val_losses.append(vloss)
-            print("validation loss:", vloss)
-
+            self.val_losses.append(vloss.item())
+            print("validation loss:", round(vloss.item(), 6))
+            if epoch%self.save_every==0:
+                epoch_model_name = '../evaluation/models/%s_onEpoch_%s'%(self.name, epoch)
+                print("Saving model to %s..."%(epoch_model_name), end='..')
+                torch.save(self, epoch_model_name)
+                print("Saved!")
+        self.epochs += new_epochs
+        self.name = "%s_D%s_B%s_E%s_H%s_LR%s_O%s"\
+            %(type(self).__name__, len(X)+new_data_size, self.batch_size, self.epochs, self.hidden_size, self.lr, self.conf["opt"])
         return val_preds, self.losses, self.val_losses
 
     def predict(self, X, bs=None):
@@ -169,7 +194,7 @@ class ModelV2(ModelV1):
     """
     def __init__(self, config):
         super(ModelV1, self).__init__()        
-        
+        self.conf = config
         self.c_size = config.get("context_size", 600)
         self.q_size = config.get("question_size", 100)
         self.hidden_size = config.get("hidden_size", 128)
@@ -179,10 +204,13 @@ class ModelV2(ModelV1):
         self.bidir = config.get("Bidirectional", True)
         self.dirs = int(self.bidir)+1
         self.lr = config.get("learning_rate", 1e-3)
+        self.linear_dropout = config.get("linear_dropout", 0.0)
+        self.seq_dropout = config.get("seq_dropout", 0.0)
         self.batch_size = config.get("batch_size", 1)
         self.epochs = config.get("epochs", 5)
         self.opt = config.get("opt", "SGD")
-        self.print_every = config.get("print_every", 10)
+        self.save_every = config.get("save_every", 5)
+
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
         if self.opt == 'RMSProp':
             self.opt = optim.RMSProp
@@ -203,9 +231,9 @@ class ModelV2(ModelV1):
 
         self.lin_q = nn.Linear(self.hidden_size, self.hidden_size)
 
-        self.gru_coatt = nn.GRU(3*self.hidden_size, 2*self.dirs*self.hidden_size, self.n_layers, bidirectional=self.bidir)
+        self.gru_coatt = nn.GRU(3*self.hidden_size, 2*self.dirs*self.hidden_size, self.n_layers, bidirectional=self.bidir, dropout=self.seq_dropout)
 
-        self.gru_bmod = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers)
+        self.gru_bmod = nn.GRU(4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers, dropout=self.seq_dropout)
 
         self.ans_ptr_1 = nn.Linear(4*self.hidden_size*self.dirs, self.hidden_size) #V
         self.ans_ptr_2 = nn.Linear(self.hidden_size, self.hidden_size) #W
@@ -260,13 +288,23 @@ class ModelV2(ModelV1):
         self.hidden_c, self.hidden_q = self.init_hidden(bs), self.init_hidden(bs)
         self.hidden_coatt = self.init_hidden_coatt(bs)
         self.hidden_bmod1 = self.init_hidden_bmod(bs)
-        self.beta = var(torch.ones((bs, self.c_size,))*(1/self.c_size))
+        if torch.cuda.is_available():
+            self.beta = var(torch.ones((bs, self.c_size,))*(1/self.c_size)).cuda()
+        else:
+            self.beta = var(torch.ones((bs, self.c_size,))*(1/self.c_size))
 
     def forward(self, inputs):
-        if len(inputs)==1:
-            inputs = var(torch.LongTensor(inputs[0]))
+        if torch.cuda.is_available():
+            if len(inputs)==1:
+                inputs = var(torch.cuda.LongTensor(inputs[0]))
+            else:
+                inputs = var(torch.cuda.LongTensor(inputs))
         else:
-            inputs = var(torch.LongTensor(inputs))
+            if len(inputs)==1:
+                inputs = var(torch.LongTensor(inputs[0]))
+            else:
+                inputs = var(torch.LongTensor(inputs))
+        
         if len(inputs.size())<2:
             inputs = inputs.unsqueeze(0)
 
@@ -294,19 +332,19 @@ class ModelV2(ModelV1):
 
         # answer pointer - boundary model:
 
-        f1 = self.ans_ptr_1(coatt_op)
+        f1 = F.dropout(self.ans_ptr_1(coatt_op), self.linear_dropout)
         H_beta = torch.bmm(self.beta.unsqueeze(1), coatt_op)
-        W_h = self.ans_ptr_2(self.hidden_bmod1).repeat(self.c_size, 1, 1)
+        W_h = F.dropout(self.ans_ptr_2(self.hidden_bmod1).repeat(self.c_size, 1, 1), self.linear_dropout)
         f1 += W_h.permute(1, 0, 2)
         f1 = F.tanh(f1)
-        out_start = F.log_softmax(self.ans_ptr_3(f1), 0).squeeze()
+        out_start = F.log_softmax(F.dropout(self.ans_ptr_3(f1), self.linear_dropout), 0).squeeze()
 
-        f2 = self.ans_ptr_1(coatt_op)
+        f2 = F.dropout(self.ans_ptr_1(coatt_op), self.linear_dropout)
         bmod_2, self.hidden_bmod2 = self.gru_bmod(H_beta.permute(1, 0, 2), self.hidden_bmod1)
-        W_h = self.ans_ptr_2(self.hidden_bmod2).repeat(self.c_size, 1, 1)
+        W_h = F.dropout(self.ans_ptr_2(self.hidden_bmod2).repeat(self.c_size, 1, 1), self.linear_dropout)
         f2 += W_h.permute(1, 0, 2)
         f2 = F.tanh(f2)
-        out_end = F.log_softmax(self.ans_ptr_3(f2), 0).squeeze()
+        out_end = F.log_softmax(F.dropout(self.ans_ptr_3(f2), self.linear_dropout), 0).squeeze()
 
         out = torch.cat((out_start, out_end), -1)
         if len(out.size())<2:
@@ -315,62 +353,83 @@ class ModelV2(ModelV1):
 
         return out
 
-    def fit(self, train_data, val_data):
+    def fit(self, train_data, val_data, pretrained=False):
+        """
+        pretrained is either False or a dict with params
+        """
         X, y = train_data
         X_val, y_val = val_data
+
+        self.name = "%s_D%s_B%s_E%s_H%s_LR%s_O%s"\
+            %(type(self).__name__, len(X), self.batch_size, self.epochs, self.hidden_size, self.lr, self.conf["opt"])
         opt = self.opt(self.parameters(), self.lr)
-        self.losses = [] # epoch loss
-        self.val_losses = []
+        new_epochs = 0
+        new_data_size = 0
+        if pretrained:
+            new_epochs = pretrained["epochs"]
+            new_data_size = pretrained["new_data"]
+        else:
+            self.losses = [] # epoch loss
+            self.val_losses = []
         bs = self.batch_size
 
         print("batch_size:", bs)
         print("batches:", len(X)/bs)
-        for epoch in range(self.epochs):
+        for epoch in range(self.epochs+new_epochs):
             tic = time()
-            print("epoch:", epoch)
+            print("epoch ", epoch)
             loss = 0.0
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
-                #print("batch:", bindex)
-                self.init_params(bs)               
+                if not pretrained:
+                    self.init_params(bs)               
                 opt.zero_grad()
                 Xb = X[i:i+bs]
+
                 Xb = torch.LongTensor(Xb)
-                # print("Xb:", Xb.size())
                 yb = var(torch.LongTensor(y[i:i+bs]))
-                # print("yb:", yb.size())
+                if torch.cuda.is_available():
+                    Xb = Xb.cuda()
+                    yb = yb.cuda()
+
                 pred = self.forward(Xb) #prediction on batch features
                 
                 yb_spandiff = yb[:, 1] - yb[:, 0]
-                """
-                pred_span = self.get_span_indices(pred)
-                # print(pred_span)
-                pred_spandiff = pred_span[:, 1] - pred_span[:, 0]
-                """
+
                 bloss = F.nll_loss(pred[:, :self.output_size], yb[:, 0]) \
                       + F.nll_loss(pred[:, self.output_size:], yb[:, 1])
                 loss += bloss.item()/bs
-                print(bindex, ':', bloss.item()/bs)
+                print("batch ", bindex, ':', round(bloss.item()/bs, 6))
                 bloss.backward()
                 opt.step()
             toc = time()-tic
             loss /= (len(y)/bs)
             self.losses.append(loss)
-            print("\nloss (epoch):", self.losses[-1], end=', change: ')
+            print("\nloss (epoch):", round(self.losses[-1], 6), end=', change: ')
             if len(self.losses)>1:
                 diff = self.losses[-2]-self.losses[-1]
                 rel_diff = diff/self.losses[-2]
-                print("%s"%rel_diff, "%")
+                print("%s%%"%(round(rel_diff*100, 4)), end=", took: %s seconds\n"%round(toc, 3))
             else:
                 print("00.0%", end=", took: %s seconds\n"%round(toc, 3))
             vloss = 0.0
             for bindex,  i in enumerate(range(0, len(y_val)-bs+1, bs)):
                 X_valb = torch.LongTensor(X_val[i:i+bs])
                 y_valb = var(torch.LongTensor(y_val[i:i+bs]))
+                if torch.cuda.is_available():
+                    X_valb = X_valb.cuda()
+                    y_valb = y_valb.cuda()
                 val_preds = self.forward(X_valb)
-                vloss += (F.nll_loss(val_preds[:, :self.output_size], y_valb[:, 0]) \
-                      + F.nll_loss(val_preds[:, self.output_size:], y_valb[:, 1])).item()
+                vloss += F.nll_loss(val_preds[:, :self.output_size], y_valb[:, 0]) \
+                      +  F.nll_loss(val_preds[:, self.output_size:], y_valb[:, 1])
             vloss /= len(y_val)
-            self.val_losses.append(vloss)
-            print("validation loss:", vloss)
-
+            self.val_losses.append(vloss.item())
+            print("validation loss:", round(vloss.item(), 6))
+            if epoch%self.save_every==0:
+                epoch_model_name = '../evaluation/models/%s_onEpoch_%s'%(self.name, epoch)
+                print("Saving model to %s..."%(epoch_model_name), end='..')
+                torch.save(self, epoch_model_name)
+                print("Saved!")
+        self.epochs += new_epochs
+        self.name = "%s_D%s_B%s_E%s_H%s_LR%s_O%s"\
+            %(type(self).__name__, len(X)+new_data_size, self.batch_size, self.epochs, self.hidden_size, self.lr, self.conf["opt"])
         return val_preds, self.losses, self.val_losses

@@ -1,4 +1,5 @@
 from utils import *
+from models import *
 
 from tqdm import tqdm
 from pprint import pprint
@@ -29,29 +30,32 @@ print("===========")
 
 seed(1)
 zipped_data = list(zip(data['X_train'], data['y_train']))
-# shuffle(zipped_data)
+shuffle(zipped_data)
 data['X_train'], data['y_train'] = list(zip(*zipped_data))
 
-num_ex_train = 512
-num_ex_val = 32
+num_train = 32
+num_val = 32
 
-idxs_train, padlens_train, X_train, y_train = make_data(data['X_train'], data['y_train'], num_ex_train, glove)
-idxs_val, padlens_val, X_val, y_val = make_data(data['X_val'], data['y_val'], num_ex_val, glove)
+idxs_train, padlens_train, X_train, y_train = make_data(data['X_train'], data['y_train'], num_train, glove)
+idxs_val, padlens_val, X_val, y_val = make_data(data['X_val'], data['y_val'], num_val, glove)
 print(len(X_train), len(y_train), len(X_val), len(y_val))
-
-from models import *
 
 conf = {"vocab": glove.vectors,
         "learning_rate": 0.01,
-        "epochs": 5,
-        "hidden_size": 32,
-        "batch_size": 32,
+        "epochs": 10,
+        "hidden_size": 50,
+        "batch_size": 16,
         "opt": "Adamax",
-        "n_layers": 1}
+        "n_layers": 1,
+        "linear_dropout": 0.4,
+        "seq_dropout": 0.3,
+        "save_every": 5}
 
 model = ModelV2(conf)
 print(model)
-model_name = "%s_D%s_B%s_E%s_H%s_LR%s_O%s"%(type(model).__name__, num_ex_train, model.batch_size, model.epochs, model.hidden_size, model.lr, conf["opt"])
+if torch.cuda.is_available():
+    model = model.cuda()
+model_name = "%s_D%s_B%s_E%s_H%s_LR%s_O%s"%(type(model).__name__, num_train, model.batch_size, model.epochs, model.hidden_size, model.lr, conf["opt"])
 print(model_name)
 
 tic = time()

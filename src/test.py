@@ -8,7 +8,6 @@ import json
 import _pickle as pkl
 from time import time
 import json
-import gc
 
 glove = setup_glove()
 print(glove.vectors.size())
@@ -16,17 +15,16 @@ VOCAB_SIZE = glove.vectors.size()[0]
 with open('../data/data.json', 'r') as f:
     data = json.load(f)
 
-model_name = "ModelV2_D512_B32_E5_H32_LR0.01_OAdamax"
+model_name = "ModelV2_D1024_B32_E10_H50_LR0.01_OAdamax"
 model = torch.load('../evaluation/models/%s'%model_name)
 print(model)
 print(model_name)
 
 
-#bs = int(model_name.split("_")[2][1:])
 bs = 64
 print("batch size", bs)
 
-num_test = 128
+num_test = 4096 # len(data['X_test'])
 idxs_test, padlens_test, X_test, y_test = make_data(data['X_test'], data['y_test'], num_test, glove)
 
 dev_results = {}
@@ -36,14 +34,15 @@ def switch_idxs(pred):
         pred[0], pred[1] = pred[1], pred[0]
     return pred
 
-bs = 32
 print("Test data size:", num_test)
 for bindex,  i in tqdm(enumerate(range(0, len(y_test)-bs+1, bs))):
     print("batch:", bindex)
-    # model.init_params(bs)
+    model.init_params(bs)
     Xb = torch.LongTensor(X_test[i:i+bs])
     yb = var(torch.LongTensor(y_test[i:i+bs]))
-    
+    if torch.cuda.is_available():
+        Xb = Xb.cuda()
+        yb = yb.cuda()
     pred = model.predict(Xb).data.tolist()
     pred = list(map(switch_idxs, pred))
     qids = [data['X_test'][j][0] for j in idxs_test[i:i+bs]]

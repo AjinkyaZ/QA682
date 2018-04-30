@@ -68,15 +68,17 @@ def make_data(raw_X, raw_y, max_length, glove):
             y.append((start_tok_idx+padlen, end_tok_idx+padlen))
             X.append(context_rep+ques_rep)
             pad_length.append(padlen)
-            if start_tok_idx+padlen > 600 or end_tok_idx+padlen > 600:
-                print("og span:", (s, e))
+            if start_tok_idx+padlen >= 600 or end_tok_idx+padlen >= 600:
+                print("Problem idx:", i, ", qid:", qid)
+                print("span chars:", (s, e))
                 print("padlen", padlen)
-                print("span (w/o) padlen:", (start_tok_idx, end_tok_idx))
-                print("span (w/ padlen):", y[-1])
+                print("span tokens (w/o) padlen:", (start_tok_idx, end_tok_idx))
+                print("span tokens (w/ padlen):", y[-1])
                 print("length of passage:", len(c_tokens))
-                print(c)
-                print(a)
-                pprint(tok_idx_map)
+                #print(c)
+                #print(a)
+                skipped += 1
+                continue
             idxs.append(i)
         except:
             skipped += 1
