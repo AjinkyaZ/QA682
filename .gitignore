@@ -1,0 +1,6 @@
+*.pyc
+*.ipynb_checkpoints
+src/.ipynb_checkpoints
+src/.vector_cache
+evaluation/models
+data/glove
