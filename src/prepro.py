@@ -1,13 +1,14 @@
-from utils import clean
-
-import _pickle as pkl
-from collections import Counter
 import json
-import numpy as np
+from collections import Counter
 from pprint import pprint
 from random import random
-from sklearn.cross_validation import train_test_split
+
+import numpy as np
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
+
+import _pickle as pkl
+from utils import clean
 
 
 def main():
@@ -34,10 +35,11 @@ def main():
                 qas = para['qas']
                 for qa in qas:
                     q_text = qa['question']
+                    q_id = qa['id']
                     data_tokens.extend(q_text.lower().strip().split(" "))
                     for a in qa['answers']:
                         start, ans_text = a['answer_start'], a['text']
-                        X_q = (context, q_text, ans_text)
+                        X_q = (q_id, context, q_text, ans_text)
                         ans = (start, start+len(ans_text))
                         data_tokens.extend(ans_text.lower().strip().split(" "))
                         data_struct[dataset+'_X'].append(X_q)
@@ -53,10 +55,12 @@ def main():
                 'y_val': None,
                 'X_test': data_struct['test_X'],
                 'y_test': data_struct['test_y']}
-    raw_data['X_train'], raw_data['X_val'], raw_data['y_train'], raw_data['y_val'] = train_test_split(
+    raw_data['X_train'], raw_data['X_val'], \
+        raw_data['y_train'], raw_data['y_val'] = train_test_split(
         data_struct['train_X'], data_struct['train_y'], test_size=0.25)
     for k, v in raw_data.items():
         print(k, len(v))
+
     with open('../data/data.json', 'w') as f:
         json.dump(raw_data, f)
 

@@ -1,4 +1,5 @@
 from pprint import pprint
+
 import torch
 import torchtext.vocab as vocab
 
@@ -56,6 +57,10 @@ def vectorize(input_seq, max_len, glove):
         padding_zeros = [400002]*(max_len-len(glove_vec))  # <pad> token
         glove_vec = padding_zeros + glove_vec
     return glove_vec
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def make_data(raw_X, raw_y, max_length, glove):

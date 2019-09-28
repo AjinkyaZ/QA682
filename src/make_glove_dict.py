@@ -1,5 +1,7 @@
-import _pickle as pkl
 from tqdm import tqdm
+
+import _pickle as pkl
+
 
 def main():
     with open('../data/glove/glove.6B.50d.txt', 'r') as f:
