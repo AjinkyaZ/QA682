@@ -69,6 +69,7 @@ def make_data(raw_X, raw_y, max_length, glove):
     idxs = []
     pad_length = []
     skipped = 0
+
     for i, ((qid, c, q, a), (s, e)) in enumerate(zip(raw_X, raw_y)):
         start_tok_idx = len(c[:c.find(a)].split())
         end_tok_idx = start_tok_idx+(len(a.split()))-1
@@ -79,14 +80,15 @@ def make_data(raw_X, raw_y, max_length, glove):
         try:
             padlen = context_rep.count(400002)+1
             span = (start_tok_idx+padlen, end_tok_idx+padlen)
+            # print(padlen, start_tok_idx, end_tok_idx)
             if start_tok_idx+padlen >= 600 or end_tok_idx+padlen >= 600:
                 print("Error: index overflow")
-                #print("Problem idx:", i, ", qid:", qid)
-                #print("span chars:", (s, e))
-                #print("padlen", padlen)
-                #print("span tokens (w/o) padlen:", (start_tok_idx, end_tok_idx))
-                #print("span tokens (w/ padlen):", (start_tok_idx+padlen, end_tok_idx+padlen))
-                #print("length of passage:", len(c_tokens))
+                # print("Problem idx:", i, ", qid:", qid)
+                # print("span chars:", (s, e))
+                # print("padlen", padlen)
+                # print("span tokens (w/o) padlen:", (start_tok_idx, end_tok_idx))
+                # print("span tokens (w/ padlen):", (start_tok_idx+padlen, end_tok_idx+padlen))
+                # print("length of passage:", len(c_tokens))
                 # print(c)
                 # print(a)
                 skipped += 1

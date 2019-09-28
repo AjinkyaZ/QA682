@@ -18,26 +18,26 @@ class ModelV1(nn.Module):
         super(ModelV1, self).__init__()
         self.conf = config
         self.input_size = config.get("input_size", 700)
-        self.hidden_size = config.get("hidden_size", 128)
+        self.hidden_size = config.get("hidden_size", 64)
         self.output_size = config.get("output_size", 600)
         self.n_layers = config.get("n_layers", 1)
         self.vocab_weights = config.get("vocab", setup_glove().vectors)
         self.bidir = config.get("Bidirectional", True)
         self.dirs = int(self.bidir)+1
         self.lr = config.get("learning_rate", 1e-3)
-        self.batch_size = config.get("batch_size", 1)
-        self.epochs = config.get("epochs", 5)
-        self.opt = config.get("opt", "SGD")
+        self.batch_size = config.get("batch_size", 32)
+        self.epochs = config.get("epochs", 10)
+        self.opt_name = config.get("opt", "Adam")
         self.save_every = config.get("save_every", 5)
 
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
-        if self.opt == 'RMSProp':
+        if self.opt_name == 'RMSProp':
             self.opt = optim.RMSProp
-        elif self.opt == 'Adam':
+        elif self.opt_name == 'Adam':
             self.opt = optim.Adam
-        elif self.opt == 'Adamax':
+        elif self.opt_name == 'Adamax':
             self.opt = optim.Adamax
-        elif self.opt == 'AdaDelta':
+        elif self.opt_name == 'AdaDelta':
             self.opt = optim.Adadelta
         else:
             self.opt = optim.SGD
@@ -128,13 +128,13 @@ class ModelV1(nn.Module):
 
         nll_loss = nn.NLLLoss(ignore_index=400002)
 
+        self.train()
         for epoch in range(self.epochs+new_epochs):
             tic = time()
             print(f"epoch {epoch}")
             loss = 0.0
 
             # set to train mode
-            self.train()
             for bindex,  i in enumerate(range(0, len(y)-bs+1, bs)):
                 if not pretrained:
                     self.init_params(bs)
@@ -173,8 +173,6 @@ class ModelV1(nn.Module):
                 print("00.0%", end=f", took: {toc:0.3f} seconds\n")
 
             vloss = 0.0
-            # set to eval mode - no backprop
-            # self.eval()
             for bindex,  i in enumerate(range(0, len(y_val)-bs+1, bs)):
                 X_valb = torch.LongTensor(X_val[i:i+bs])
                 y_valb = var(torch.LongTensor(y_val[i:i+bs]))
@@ -194,7 +192,7 @@ class ModelV1(nn.Module):
             vloss /= len(y_val)
             self.val_losses.append(vloss.item())
             print("validation loss:", round(vloss.item(), 6))
-            if epoch > 0 and epoch % self.save_every == 0:
+            if epoch % self.save_every == 0:
                 epoch_model_name = \
                     f"../evaluation/models/{self.name}_onEpoch_{epoch}"
                 print(f"Saving model to {epoch_model_name}...", end="..")
@@ -202,10 +200,9 @@ class ModelV1(nn.Module):
                 print("Saved!")
 
         self.epochs += new_epochs
-        opt_ = self.conf["opt"]
         self.name = f"{type(self).__name__}_D{len(X)+new_data_size}" \
-            f"_B{self.batch_size}_" \
-                     f"E{self.epochs}_H{self.hidden_size}_LR{self.lr}_O{opt_}"
+            f"_B{self.batch_size}_E{self.epochs}_" \
+            f"H{self.hidden_size}_LR{self.lr}_O{self.opt_name}"
         return val_preds, self.losses, self.val_losses
 
     def predict(self, X, bs=None):
@@ -243,17 +240,17 @@ class ModelV2(ModelV1):
         self.seq_dropout = config.get("seq_dropout", 0.0)
         self.batch_size = config.get("batch_size", 1)
         self.epochs = config.get("epochs", 5)
-        self.opt = config.get("opt", "SGD")
+        self.opt_name = config.get("opt", "SGD")
         self.save_every = config.get("save_every", 5)
 
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
-        if self.opt == 'RMSProp':
+        if self.opt_name == 'RMSProp':
             self.opt = optim.RMSProp
-        elif self.opt == 'Adam':
+        elif self.opt_name == 'Adam':
             self.opt = optim.Adam
-        elif self.opt == 'Adamax':
+        elif self.opt_name == 'Adamax':
             self.opt = optim.Adamax
-        elif self.opt == 'AdaDelta':
+        elif self.opt_name == 'AdaDelta':
             self.opt = optim.Adadelta
         else:
             self.opt = optim.SGD
@@ -407,9 +404,9 @@ class ModelV2(ModelV1):
         if self.cell_type == "LSTM":
             self.hidden_bmod1, cell_bmod1 = self.hidden_bmod1  # hidden, cell
 
-        ## print("hbmod", self.hidden_bmod1.shape)
+        # print("hbmod", self.hidden_bmod1.shape)
         aptr2 = self.ans_ptr_2(self.hidden_bmod1)
-        ## print("aptr2", aptr2.shape)
+        # print("aptr2", aptr2.shape)
         W_h = F.dropout(aptr2.repeat(self.c_size, 1, 1), self.linear_dropout)
         # print(f1.shape, W_h.shape)
         f1 += W_h.permute(1, 0, 2)
