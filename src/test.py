@@ -8,6 +8,7 @@ from torch.autograd import Variable as var
 from tqdm import tqdm
 
 import _pickle as pkl
+from models import *
 from utils import *
 
 
@@ -20,7 +21,8 @@ def switch_idxs(pred):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-nt', '--num_test', default=1024, type=int)
-    parser.add_argument('-m', '--model', type=str)
+    parser.add_argument('-mf', '--model_file',
+                        default='../data/checkpoint.pth.tar', type=str)
 
     args = parser.parse_args()
     print("Using config:")
@@ -33,15 +35,15 @@ def main():
     with open('../data/data.json', 'r') as f:
         data = json.load(f)
 
-    model_path = args.model
+    model_path = args.model_file
     print()
-    print("Loading model ", end='')
-    model = torch.load(f"{model_path}")
-    print(model.name, "\n")
+    print(f"Loading model from {model_path}")
+    checkpoint = torch.load(f"{model_path}")
+    model = ModelV2(checkpoint['model_init_config'])
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     print(model)
 
     bs = model.batch_size
-
 
     idxs_test, padlens_test, X_test, y_test = make_data(
         data['X_test'], data['y_test'], args.num_test, glove)
@@ -51,7 +53,8 @@ def main():
     # pprint(data['X_test'][idxs_test[0]])
 
     print("Test data size:", args.num_test)
-    print(f"batches: {args.num_test//bs}")
+    n_batches = args.num_test//bs
+    print(f"Batch size: {bs}, Batches: {n_batches}")
     print()
 
     model.eval()
@@ -81,7 +84,7 @@ def main():
     # print("processed:", num_processed)
     dev_results['version'] = '1.1'
 
-    fname = f"run_{model.name}_test{args.num_test}.json"
+    fname = f"run_test{args.num_test}.json"
     with open(f"../data/{fname}", 'w') as f:
         print(f"saving to {fname}")
         json.dump(dev_results, f)

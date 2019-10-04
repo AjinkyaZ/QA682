@@ -15,6 +15,8 @@ sklearn = "*"
 torchtext = "*"
 torchvision = "*"
 isort = "*"
+wandb = "*"
+torchviz = "*"
 
 [requires]
 python_version = "3.6"

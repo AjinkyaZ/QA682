@@ -71,14 +71,14 @@ class ModelV1(nn.Module):
     def forward(self, inputs):
         if torch.cuda.is_available():
             if len(inputs) == 1:
-                inputs = var(torch.cuda.LongTensor(inputs[0]))
+                inputs = torch.cuda.LongTensor(inputs[0])
             else:
-                inputs = var(torch.cuda.LongTensor(inputs))
+                inputs = torch.cuda.LongTensor(inputs)
         else:
             if len(inputs) == 1:
-                inputs = var(torch.LongTensor(inputs[0]))
+                inputs = torch.LongTensor(inputs[0])
             else:
-                inputs = var(torch.LongTensor(inputs))
+                inputs = torch.LongTensor(inputs)
         embeds = self.encoder(inputs).permute(1, 0, 2)  # get glove repr
         # print("embeds:", embeds.size())
         seq_len = embeds.size()[0]
@@ -104,6 +104,8 @@ class ModelV1(nn.Module):
     def fit(self, train_data, val_data, pretrained=False):
         """
         pretrained is either False or a dict with params
+
+        -- deprecating fit method, expect this to be removed in later versions
         """
         X, y = train_data
         X_val, y_val = val_data
@@ -142,7 +144,7 @@ class ModelV1(nn.Module):
                 Xb = X[i:i+bs]
 
                 Xb = torch.LongTensor(Xb)
-                yb = var(torch.LongTensor(y[i:i+bs]))
+                yb = torch.LongTensor(y[i:i+bs])
                 if torch.cuda.is_available():
                     Xb = Xb.cuda()
                     yb = yb.cuda()
@@ -175,7 +177,7 @@ class ModelV1(nn.Module):
             vloss = 0.0
             for bindex,  i in enumerate(range(0, len(y_val)-bs+1, bs)):
                 X_valb = torch.LongTensor(X_val[i:i+bs])
-                y_valb = var(torch.LongTensor(y_val[i:i+bs]))
+                y_valb = torch.LongTensor(y_val[i:i+bs])
                 self.init_params(bs)
                 if torch.cuda.is_available():
                     X_valb = X_valb.cuda()
@@ -261,21 +263,22 @@ class ModelV2(ModelV1):
         self.encoder_c = nn.Embedding(self.vocab_size, self.emb_dim)
         self.encoder_q = nn.Embedding(self.vocab_size, self.emb_dim)
 
-        self.gru_c = getattr(nn, self.cell_type)(
+        cell_type = getattr(nn, self.cell_type)
+        self.gru_c = cell_type(
             self.emb_dim, self.hidden_size, self.n_layers)
-        self.gru_q = getattr(nn, self.cell_type)(
+        self.gru_q = cell_type(
             self.emb_dim, self.hidden_size, self.n_layers)
 
         self.lin_q = nn.Linear(self.hidden_size, self.hidden_size)
 
-        self.gru_coatt = getattr(nn, self.cell_type)(3*self.hidden_size,
-                                                     2*self.dirs *
-                                                     self.hidden_size,
-                                                     self.n_layers,
-                                                     bidirectional=self.bidir,
-                                                     dropout=self.seq_dropout)
+        self.gru_coatt = cell_type(3*self.hidden_size,
+                                   2*self.dirs *
+                                   self.hidden_size,
+                                   self.n_layers,
+                                   bidirectional=self.bidir,
+                                   dropout=self.seq_dropout)
 
-        self.gru_bmod = getattr(nn, self.cell_type)(
+        self.gru_bmod = cell_type(
             4*self.dirs*self.hidden_size, self.hidden_size, self.n_layers,
             dropout=self.seq_dropout)
 
@@ -335,14 +338,16 @@ class ModelV2(ModelV1):
             .uniform_(-weight_scale, weight_scale)
 
     def init_params(self, bs=None):
+        """
         if self.cell_type == "LSTM":
-            self.hidden_c, = (self.init_hidden(bs), self.init_hidden(bs))
+            self.hidden_c = (self.init_hidden(bs), self.init_hidden(bs))
             self.hidden_q = (self.init_hidden(bs), self.init_hidden(bs))
             self.hidden_coatt = (self.init_hidden_coatt(
                 bs), self.init_hidden_coatt(bs))
             self.hidden_bmod1 = (self.init_hidden_bmod(bs),
                                  self.init_hidden_bmod(bs))
-        elif self.cell_type == "GRU":
+        """
+        if self.cell_type == "GRU":
             self.hidden_c, self.hidden_q = self.init_hidden(
                 bs), self.init_hidden(bs)
             self.hidden_coatt = self.init_hidden_coatt(bs)
@@ -401,8 +406,11 @@ class ModelV2(ModelV1):
         # obtain start index
         f1 = F.dropout(self.ans_ptr_1(coatt_op), self.linear_dropout)
         H_beta = torch.bmm(self.beta.unsqueeze(1), coatt_op)
+
+        """
         if self.cell_type == "LSTM":
             self.hidden_bmod1, cell_bmod1 = self.hidden_bmod1  # hidden, cell
+        """
 
         # print("hbmod", self.hidden_bmod1.shape)
         aptr2 = self.ans_ptr_2(self.hidden_bmod1)
@@ -416,12 +424,14 @@ class ModelV2(ModelV1):
 
         # obtain end index
         f2 = F.dropout(self.ans_ptr_1(coatt_op), self.linear_dropout)
+
+        """
         if self.cell_type == "LSTM":
             _, (self.hidden_bmod2, cell_bmod2) = self.gru_bmod(
                 H_beta.permute(1, 0, 2), (self.hidden_bmod1, cell_bmod1))
-        else:
-            _, self.hidden_bmod2 = self.gru_bmod(
-                H_beta.permute(1, 0, 2), self.hidden_bmod1)
+        """
+        _, self.hidden_bmod2 = self.gru_bmod(
+            H_beta.permute(1, 0, 2), self.hidden_bmod1)
         W_h = F.dropout(self.ans_ptr_2(self.hidden_bmod2).repeat(
             self.c_size, 1, 1), self.linear_dropout)
         f2 += W_h.permute(1, 0, 2)

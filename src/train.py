@@ -5,6 +5,10 @@ from random import seed, shuffle
 from time import time
 
 import matplotlib.pyplot as plt
+import torch
+from torch import nn, optim
+from torch.autograd import Variable as var
+from torchviz import make_dot
 from tqdm import tqdm
 
 import _pickle as pkl
@@ -12,19 +16,90 @@ from models import *
 from utils import *
 
 
+def train(model, X, y, optimizer, epoch, loss_fn):
+    model.train()
+
+    bs = model.batch_size
+    n_batches = len(y)//bs
+    print(f"Batch size: {bs}, Batches: {n_batches}")
+
+    tloss = 0.0
+    tic_train = time()
+    for bindex, i in enumerate(range(n_batches)):
+        model.init_params(bs)
+        Xb = torch.LongTensor(X[i:i+bs])
+        yb = torch.LongTensor(y[i:i+bs])
+
+        if torch.cuda.is_available():
+            Xb = Xb.cuda()
+            yb = yb.cuda()
+
+        pred = model(Xb)
+
+        # make_dot(pred)
+
+        start_loss = loss_fn(pred[:, :model.output_size], yb[:, 0])
+        end_loss = loss_fn(pred[:, model.output_size:], yb[:, 1])
+        tbloss = start_loss + end_loss
+        tloss += tbloss.item()
+
+        print(f"batch {bindex} : {tbloss.item():0.6f}")
+        tbloss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+    toc_train = time()
+    print(f"Epoch {epoch} took: {toc_train-tic_train:0.3f}s")
+    print(f"Epoch training loss: {tloss:0.6f}")
+
+    return tloss
+
+
+def validate(model, X, y, epoch, loss_fn):
+    model.eval()
+
+    bs = model.batch_size
+    n_batches = len(y)//bs
+
+    vloss = 0.0
+    tic_val = time()
+    with torch.no_grad():
+        for bindex, i in enumerate(range(n_batches)):
+            model.init_params(bs)
+            Xb = torch.LongTensor(X[i:i+bs])
+            yb = torch.LongTensor(y[i:i+bs])
+            if torch.cuda.is_available():
+                Xb = Xb.cuda()
+                yb = yb.cuda()
+
+            val_pred = model(Xb)
+
+            start_loss = loss_fn(
+                val_pred[:, :model.output_size], yb[:, 0])
+            end_loss = loss_fn(
+                val_pred[:, model.output_size:], yb[:, 1])
+            vbloss = start_loss + end_loss
+            vloss += vbloss.item()
+    toc_val = time()
+    print(f"Epoch validation loss: {vloss:0.6f}")
+    return vloss
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-nt', '--num_train', default=1024, type=int)
     parser.add_argument('-nv', '--num_val', default=256, type=int)
     parser.add_argument('-bs', '--batch_size', default=32, type=int)
-    parser.add_argument('-e', '--epochs', default=100, type=int)
+    parser.add_argument('-e',  '--epochs', default=100, type=int)
     parser.add_argument('-lr', '--learning_rate', default=1e-3, type=float)
-    parser.add_argument('-o', '--optimizer', default='Adam')
+    parser.add_argument('-o',  '--optimizer', default='Adam')
     parser.add_argument('-nl', '--n_layers', default=1, type=int)
-    parser.add_argument('-s', '--save_every', default=5, type=int)
+    parser.add_argument('-s',  '--save_every', default=5, type=int)
     parser.add_argument('-hs', '--hidden_size', default=64, type=int)
     parser.add_argument('-ld', '--linear_dropout', default=0.3, type=float)
     parser.add_argument('-ls', '--seq_dropout', default=0.0, type=float)
+    parser.add_argument('-mf', '--model_file',
+                        default='../data/checkpoint.pth.tar', type=str)
 
     args = parser.parse_args()
     print("Using config:")
@@ -36,22 +111,6 @@ def main():
     VOCAB_SIZE = glove.vectors.size()[0]
     with open('../data/data.json', 'r') as f:
         data = json.load(f)
-
-    """
-    idx = 5
-    example_X = (data['X_train'][idx])
-    example_y = (data['y_train'][idx])
-
-    print("ID:", example_X[0])
-    print("Context:", example_X[1])
-    print("Question:", example_X[2])
-    print("Answer Span:", example_y)
-    s, e = example_y
-    assert example_X[1][s:e] == example_X[3]
-    print("Answer:", example_X[3])
-
-    print("=="*30)
-    """
 
     seed(1)
     zipped_data = list(zip(data['X_train'], data['y_train']))
@@ -79,6 +138,7 @@ def main():
     print()
     print("Constructing model...")
     model = ModelV2(conf)
+    model.init_params(model.batch_size)
     print(model)
 
     n_params = count_parameters(model)
@@ -87,26 +147,58 @@ def main():
     if torch.cuda.is_available():
         model = model.cuda()
 
-    model_name = f"{type(model).__name__}" \
-        f"_D{args.num_train}_B{model.batch_size}_" \
-        f"E{model.epochs}_H{model.hidden_size}_LR{model.lr}_O{model.opt_name}"
-    print(f"Model file: {model_name}\n")
+    # v_preds, losses, vlosses = model.fit((X_train, y_train), (X_val, y_val))
+
+    optimizer = model.opt(model.parameters(), model.lr)
+
+    epochs_train = args.epochs
+
+    nll_loss = nn.NLLLoss(ignore_index=400002)
+    tlosses = []
+    vlosses = []
+    best_vloss = float("inf")
 
     print("Training model...")
     tic = time()
-    v_preds, losses, vlosses = model.fit((X_train, y_train), (X_val, y_val))
+
+    for epoch in range(epochs_train):
+        tic_train = time()
+        print(f"Epoch {epoch}")
+
+        # train model
+
+        tloss = train(model, X_train, y_train, optimizer, epoch, nll_loss)
+        tlosses.append(tloss)
+
+        # validate model
+        vloss = validate(model, X_val, y_val, epoch, nll_loss)
+        vlosses.append(vloss)
+
+        if vloss < best_vloss:
+            is_best = True
+            best_vloss = vloss
+        else:
+            is_best = False
+
+        if epoch % args.save_every == 0:
+            print(f"Saving model to {args.model_file}")
+            checkpoint = {'epoch': epoch,
+                          'model_state_dict': model.state_dict(),
+                          'optimizer_state_dict': optimizer.state_dict(),
+                          'training_loss': tloss,
+                          'validation_loss': vloss,
+                          'model_init_config': conf}
+            save_checkpoint(checkpoint, is_best,
+                            args.model_file)
+
     toc = time()
-    print(f"took {toc-tic} seconds")
-    torch.save(model, f"../evaluation/models/{model_name}")
+    print(f"{epochs_train} epochs took {toc-tic} seconds")
 
     plt.figure(figsize=(10, 6))
-    plt.plot(list(range(len(losses))), losses, label='train')
+    plt.plot(list(range(len(tlosses))), tlosses, label='train')
     plt.plot(list(range(len(vlosses))), vlosses, label='val')
     plt.legend()
     plt.savefig(f"run.png")
-
-    model = torch.load(f"../evaluation/models/{model_name}")
-    print(f"Saved to: {model_name}")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import shutil
 from pprint import pprint
 
 import torch
@@ -61,6 +62,12 @@ def vectorize(input_seq, max_len, glove):
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+    torch.save(state, filename)
+    if is_best:
+        shutil.copyfile(filename, 'model_best.pth.tar')
 
 
 def make_data(raw_X, raw_y, max_length, glove):

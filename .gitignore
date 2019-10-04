@@ -1,6 +1,7 @@
 *.pyc
 *.ipynb_checkpoints
 .ipynb_checkpoints
+*.sublime-*
 src/.vector_cache
 evaluation/models
 data/glove
