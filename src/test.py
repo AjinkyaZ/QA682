@@ -22,7 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-nt', '--num_test', default=1024, type=int)
     parser.add_argument('-mf', '--model_file',
-                        default='../data/checkpoint.pth.tar', type=str)
+                        default='./checkpoint.pth.tar', type=str)
 
     args = parser.parse_args()
     print("Using config:")
@@ -42,7 +42,10 @@ def main():
     model = ModelV2(checkpoint['model_init_config'])
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     print(model)
-
+    
+    print(f"model was trained for {checkpoint['epoch']} epochs")
+    if torch.cuda.is_available():
+        model = model.cuda()
     bs = model.batch_size
 
     idxs_test, padlens_test, X_test, y_test = make_data(

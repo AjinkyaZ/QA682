@@ -14,6 +14,8 @@ from tqdm import tqdm
 import _pickle as pkl
 from models import *
 from utils import *
+import wandb
+wandb.init(project="qa682")
 
 
 def train(model, X, y, optimizer, epoch, loss_fn):
@@ -99,7 +101,7 @@ def main():
     parser.add_argument('-ld', '--linear_dropout', default=0.3, type=float)
     parser.add_argument('-ls', '--seq_dropout', default=0.0, type=float)
     parser.add_argument('-mf', '--model_file',
-                        default='../data/checkpoint.pth.tar', type=str)
+                        default='./checkpoint.pth.tar', type=str)
 
     args = parser.parse_args()
     print("Using config:")
@@ -140,9 +142,13 @@ def main():
     model = ModelV2(conf)
     model.init_params(model.batch_size)
     print(model)
-
+    
     n_params = count_parameters(model)
     print(f"Trainable parameters: {n_params}")
+
+    wandb.watch(model)
+    wandb.config.update(args)
+    wandb.config.n_params = n_params
 
     if torch.cuda.is_available():
         model = model.cuda()
@@ -173,7 +179,10 @@ def main():
         # validate model
         vloss = validate(model, X_val, y_val, epoch, nll_loss)
         vlosses.append(vloss)
-
+        
+        wandb.log({"train_loss": tloss,
+                   "val_loss": vloss
+                   }, step=epoch)
         if vloss < best_vloss:
             is_best = True
             best_vloss = vloss
