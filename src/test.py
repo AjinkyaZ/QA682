@@ -23,13 +23,14 @@ def main():
     parser.add_argument('-nt', '--num_test', default=1024, type=int)
     parser.add_argument('-mf', '--model_file',
                         default='./checkpoint.pth.tar', type=str)
+    parser.add_argument('-vd', '--vector_dim', default=50, type=int)
 
     args = parser.parse_args()
     print("Using config:")
     for arg, val in vars(args).items():
         print(arg, val)
 
-    glove = setup_glove()
+    glove = setup_glove(DIM=args.vector_dim)
     # print(glove.vectors.size())
     VOCAB_SIZE = glove.vectors.size()[0]
     with open('../data/data.json', 'r') as f:
