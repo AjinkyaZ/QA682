@@ -21,7 +21,7 @@ class ModelV1(nn.Module):
         self.hidden_size = config.get("hidden_size", 64)
         self.output_size = config.get("output_size", 600)
         self.n_layers = config.get("n_layers", 1)
-        self.vocab_weights = config.get("vocab", setup_glove().vectors)
+        self.vocab_weights = config.get("vocab", None)
         self.bidir = config.get("Bidirectional", True)
         self.dirs = int(self.bidir)+1
         self.lr = config.get("learning_rate", 1e-3)
@@ -234,7 +234,7 @@ class ModelV2(ModelV1):
         self.hidden_size = config.get("hidden_size", 128)
         self.output_size = config.get("output_size", 600)
         self.n_layers = config.get("n_layers", 1)
-        self.vocab_weights = config.get("vocab", setup_glove().vectors)
+        self.vocab_weights = config.get("vocab", None)
         self.bidir = config.get("Bidirectional", True)
         self.dirs = int(self.bidir)+1
         self.lr = config.get("learning_rate", 1e-3)

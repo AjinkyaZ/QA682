@@ -8,20 +8,31 @@ import torchtext.vocab as vocab
 def setup_glove(name='6B', DIM=50):
     glove = vocab.GloVe(name='6B', dim=DIM)
 
-    glove.stoi['<sos>'] = len(glove.stoi)+1  # 400000
+    # print(len(glove.stoi)) # 400000
+    glove.stoi['<sos>'] = len(glove.stoi)  # 400000
+    glove.itos.append('<sos>')
     glove.vectors = torch.cat((glove.vectors, torch.ones(1, DIM)*1))
 
-    glove.stoi['<eos>'] = len(glove.stoi)+1  # 4000001
+    glove.stoi['<eos>'] = len(glove.stoi)  # 400001
+    glove.itos.append('<eos>')
     glove.vectors = torch.cat((glove.vectors, torch.ones(1, DIM)*2))
 
-    glove.stoi['<pad>'] = len(glove.stoi)+1  # 400002
+    glove.stoi['<pad>'] = len(glove.stoi)  # 400002
+    glove.itos.append('<pad>')
     glove.vectors = torch.cat((glove.vectors, torch.zeros(1, DIM)))
 
-    # 400003 - add token->index for unknown/oov
-    glove.stoi['<unk>'] = len(glove.stoi)+1
-    # add index->vec for unknown/oov
+    glove.stoi['<unk>'] = len(glove.stoi)  # 400003
+    glove.itos.append('<unk>')
     glove.vectors = torch.cat((glove.vectors, torch.ones(1, DIM)*-1))
 
+    print()
+    assert len(glove.stoi) == len(glove.itos) \
+        == glove.vectors.shape[0] == 400004
+    print("GloVe vocab size:", len(glove.stoi))
+    print("Special tokens: ")
+    for x in ['<sos>', '<eos>', '<pad>', '<unk>']:
+        print(x, glove.stoi[x])
+    print()
     return glove
 
 
@@ -89,7 +100,7 @@ def make_data(raw_X, raw_y, max_length, glove):
             span = (start_tok_idx+padlen, end_tok_idx+padlen)
             # print(padlen, start_tok_idx, end_tok_idx)
             if start_tok_idx+padlen >= 600 or end_tok_idx+padlen >= 600:
-                print("Error: index overflow")
+                # print("Error: index overflow")
                 # print("Problem idx:", i, ", qid:", qid)
                 # print("span chars:", (s, e))
                 # print("padlen", padlen)
@@ -104,10 +115,11 @@ def make_data(raw_X, raw_y, max_length, glove):
             X.append(context_rep+ques_rep)
             pad_length.append(padlen)
             if span[0] >= 600 or span[1] >= 600 or span[0] < 0 or span[1] < 0:
-                print(span)
+                # print(span)
+                pass
             if start_tok_idx+padlen < 0 or end_tok_idx+padlen < 0:
-                print("Error: index underflow")
-                print(start_tok_idx+padlen, end_tok_idx+padlen)
+                # print("Error: index underflow")
+                # print(start_tok_idx+padlen, end_tok_idx+padlen)
                 skipped += 1
                 continue
             idxs.append(i)

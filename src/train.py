@@ -12,9 +12,10 @@ from torchviz import make_dot
 from tqdm import tqdm
 
 import _pickle as pkl
+import wandb
 from models import *
 from utils import *
-import wandb
+
 wandb.init(project="qa682")
 
 
@@ -142,7 +143,7 @@ def main():
     model = ModelV2(conf)
     model.init_params(model.batch_size)
     print(model)
-    
+
     n_params = count_parameters(model)
     print(f"Trainable parameters: {n_params}")
 
@@ -159,7 +160,8 @@ def main():
 
     epochs_train = args.epochs
 
-    nll_loss = nn.NLLLoss(ignore_index=400002)
+    # ignore padding index
+    nll_loss = nn.NLLLoss(ignore_index=glove.stoi['<pad>'])
     tlosses = []
     vlosses = []
     best_vloss = float("inf")
@@ -179,7 +181,7 @@ def main():
         # validate model
         vloss = validate(model, X_val, y_val, epoch, nll_loss)
         vlosses.append(vloss)
-        
+
         wandb.log({"train_loss": tloss,
                    "val_loss": vloss
                    }, step=epoch)
@@ -199,6 +201,7 @@ def main():
                           'model_init_config': conf}
             save_checkpoint(checkpoint, is_best,
                             args.model_file)
+        print()
 
     toc = time()
     print(f"{epochs_train} epochs took {toc-tic} seconds")

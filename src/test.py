@@ -42,7 +42,7 @@ def main():
     model = ModelV2(checkpoint['model_init_config'])
     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     print(model)
-    
+
     print(f"model was trained for {checkpoint['epoch']} epochs")
     if torch.cuda.is_available():
         model = model.cuda()
@@ -64,8 +64,6 @@ def main():
     with torch.no_grad():
         for bindex,  i in enumerate(range(0, len(y_test)-bs+1, bs)):
             print("batch:", bindex)
-            model.init_params(bs)
-
             Xb = torch.LongTensor(X_test[i:i+bs])
             yb = var(torch.LongTensor(y_test[i:i+bs]))
             if torch.cuda.is_available():
