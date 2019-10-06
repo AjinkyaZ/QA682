@@ -16,8 +16,6 @@ import wandb
 from models import *
 from utils import *
 
-wandb.init(project="qa682")
-
 
 def train(model, X, y, optimizer, epoch, loss_fn):
     model.train()
@@ -28,7 +26,7 @@ def train(model, X, y, optimizer, epoch, loss_fn):
 
     tloss = 0.0
     tic_train = time()
-    for bindex, i in enumerate(range(n_batches)):
+    for i in range(n_batches):
         model.init_params(bs)
         Xb = torch.LongTensor(X[i:i+bs])
         yb = torch.LongTensor(y[i:i+bs])
@@ -46,7 +44,7 @@ def train(model, X, y, optimizer, epoch, loss_fn):
         tbloss = start_loss + end_loss
         tloss += tbloss.item()
 
-        print(f"batch {bindex} : {tbloss.item():0.6f}")
+        print(f"batch {i} : {tbloss.item():0.6f}")
         tbloss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -67,7 +65,7 @@ def validate(model, X, y, epoch, loss_fn):
     vloss = 0.0
     tic_val = time()
     with torch.no_grad():
-        for bindex, i in enumerate(range(n_batches)):
+        for i in range(n_batches):
             model.init_params(bs)
             Xb = torch.LongTensor(X[i:i+bs])
             yb = torch.LongTensor(y[i:i+bs])
@@ -101,6 +99,7 @@ def main():
     parser.add_argument('-hs', '--hidden_size', default=64, type=int)
     parser.add_argument('-ld', '--linear_dropout', default=0.3, type=float)
     parser.add_argument('-ls', '--seq_dropout', default=0.0, type=float)
+    parser.add_argument('-rt', '--resume_training', default=False, type=bool)
     parser.add_argument('-mf', '--model_file',
                         default='./checkpoint.pth.tar', type=str)
     parser.add_argument('-vd', '--vector_dim', default=50, type=int)
@@ -127,22 +126,46 @@ def main():
         data['X_val'], data['y_val'], args.num_val, glove)
     # print(len(X_train), len(y_train), len(X_val), len(y_val))
 
-    conf = {"vocab": glove.vectors,
-            "learning_rate": args.learning_rate,
-            "epochs": args.epochs,
-            "cell_type": "GRU",
-            "hidden_size": args.hidden_size,
-            "batch_size": args.batch_size,
-            "opt": args.optimizer,
-            "n_layers": args.n_layers,
-            "linear_dropout": args.linear_dropout,
-            "seq_dropout": args.seq_dropout,
-            "save_every": args.save_every}
-
     print()
-    print("Constructing model...")
-    model = ModelV2(conf)
-    model.init_params(model.batch_size)
+    if not args.resume_training:
+        conf = {"vocab": glove.vectors,
+                "learning_rate": args.learning_rate,
+                "epochs": args.epochs,
+                "cell_type": "GRU",
+                "hidden_size": args.hidden_size,
+                "batch_size": args.batch_size,
+                "opt": args.optimizer,
+                "n_layers": args.n_layers,
+                "linear_dropout": args.linear_dropout,
+                "seq_dropout": args.seq_dropout,
+                "save_every": args.save_every}
+
+        print("Constructing model...")
+        model = ModelV2(conf)
+        model.init_params(model.batch_size)
+
+        optimizer = model.opt(model.parameters(), model.lr)
+        wandb.init(project="qa682")
+        run_id = wandb.run.id
+        run_name = wandb.run.name
+    else:
+        model_path = args.model_file
+        print(f"Loading model from {model_path}")
+        checkpoint = torch.load(f"{model_path}")
+        print(f"model was trained for {checkpoint['epoch']} epochs")
+        conf = checkpoint['model_init_config']
+        model = ModelV2(conf)
+        model.load_state_dict(checkpoint['model_state_dict'],
+                              strict=False)
+
+        optimizer = model.opt(model.parameters(), model.lr)
+        optimizer.load_state_dict(
+            checkpoint['optimizer_state_dict'])
+
+        run_id = checkpoint['run_id']
+        run_name = checkpoint['run_name']
+        wandb.init(project="qa682", resume=run_id)
+
     print(model)
 
     n_params = count_parameters(model)
@@ -157,9 +180,12 @@ def main():
 
     # v_preds, losses, vlosses = model.fit((X_train, y_train), (X_val, y_val))
 
-    optimizer = model.opt(model.parameters(), model.lr)
-
+    epochs_init = 0
     epochs_train = args.epochs
+
+    if args.resume_training:
+        epochs_init = checkpoint['epoch']
+        epochs_train += checkpoint['epoch']
 
     # ignore padding index
     nll_loss = nn.NLLLoss(ignore_index=glove.stoi['<pad>'])
@@ -170,7 +196,7 @@ def main():
     print("Training model...")
     tic = time()
 
-    for epoch in range(epochs_train):
+    for epoch in range(epochs_init+1, epochs_train):
         tic_train = time()
         print(f"Epoch {epoch}")
 
@@ -186,6 +212,7 @@ def main():
         wandb.log({"train_loss": tloss,
                    "val_loss": vloss
                    }, step=epoch)
+        
         if vloss < best_vloss:
             is_best = True
             best_vloss = vloss
@@ -199,7 +226,9 @@ def main():
                           'optimizer_state_dict': optimizer.state_dict(),
                           'training_loss': tloss,
                           'validation_loss': vloss,
-                          'model_init_config': conf}
+                          'model_init_config': conf,
+                          'run_id': run_id,
+                          'run_name': run_name}
             save_checkpoint(checkpoint, is_best,
                             args.model_file)
         print()
