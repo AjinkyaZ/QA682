@@ -144,6 +144,9 @@ def main():
         model = ModelV2(conf)
         model.init_params(model.batch_size)
 
+        if torch.cuda.is_available():
+            model = model.cuda()
+        
         optimizer = model.opt(model.parameters(), model.lr)
         wandb.init(project="qa682")
         run_id = wandb.run.id
@@ -158,6 +161,9 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'],
                               strict=False)
 
+        if torch.cuda.is_available():
+            model = model.cuda()
+        
         optimizer = model.opt(model.parameters(), model.lr)
         optimizer.load_state_dict(
             checkpoint['optimizer_state_dict'])
@@ -174,9 +180,6 @@ def main():
     wandb.watch(model)
     wandb.config.update(args)
     wandb.config.n_params = n_params
-
-    if torch.cuda.is_available():
-        model = model.cuda()
 
     # v_preds, losses, vlosses = model.fit((X_train, y_train), (X_val, y_val))
 
