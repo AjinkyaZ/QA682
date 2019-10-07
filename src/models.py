@@ -31,16 +31,12 @@ class ModelV1(nn.Module):
         self.save_every = config.get("save_every", 5)
 
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
-        if self.opt_name == 'RMSProp':
-            self.opt = optim.RMSProp
-        elif self.opt_name == 'Adam':
-            self.opt = optim.Adam
-        elif self.opt_name == 'Adamax':
-            self.opt = optim.Adamax
-        elif self.opt_name == 'AdaDelta':
-            self.opt = optim.Adadelta
-        else:
-            self.opt = optim.SGD
+        try:
+            self.opt = getattr(optim, self.opt_name)
+        except:
+            raise ValueError(f"Optimizer choice {self.opt_name} invalid!\n"
+                             f"Enter a valid optimizer e.g. "
+                             f"Adam, RMSProp, SGD etc.")
 
         self.encoder = nn.Embedding(self.vocab_size, self.emb_dim)
         self.lstm = nn.LSTM(self.emb_dim, self.hidden_size,
@@ -246,16 +242,12 @@ class ModelV2(ModelV1):
         self.save_every = config.get("save_every", 5)
 
         self.vocab_size, self.emb_dim = self.vocab_weights.size()
-        if self.opt_name == 'RMSProp':
-            self.opt = optim.RMSProp
-        elif self.opt_name == 'Adam':
-            self.opt = optim.Adam
-        elif self.opt_name == 'Adamax':
-            self.opt = optim.Adamax
-        elif self.opt_name == 'AdaDelta':
-            self.opt = optim.Adadelta
-        else:
-            self.opt = optim.SGD
+        try:
+            self.opt = getattr(optim, self.opt_name)
+        except:
+            raise ValueError(f"Optimizer choice {self.opt_name} invalid!\n"
+                             f"Enter a valid optimizer e.g. "
+                             f"Adam, RMSProp, SGD etc.")
 
         if self.cell_type not in ["LSTM", "GRU"]:
             raise TypeError("Invalid Cell Type - use LSTM or GRU")

@@ -5,8 +5,8 @@ import torch
 import torchtext.vocab as vocab
 
 
-def setup_glove(name='6B', DIM=50):
-    glove = vocab.GloVe(name='6B', dim=DIM)
+def setup_glove(name='6B', DIM=50, cache_dir='./.vector_cache'):
+    glove = vocab.GloVe(name='6B', dim=DIM, cache=cache_dir)
 
     # print(len(glove.stoi)) # 400000
     glove.stoi['<sos>'] = len(glove.stoi)  # 400000
